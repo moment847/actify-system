@@ -18,7 +18,7 @@ export function LoginForm({ next }: { next: string }) {
   }
   async function forgot(email: string) {
     if (!email) return setError('メールアドレスを入れてください');
-    await createClient().auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/auth/callback?next=/account/password` });
+    await createClient().auth.resetPasswordForEmail(email, { redirectTo: `${location.origin}/account/password` });
     setSent(true);
   }
   return (

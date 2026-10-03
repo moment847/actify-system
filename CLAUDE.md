@@ -13,3 +13,7 @@
 - AI は `src/lib/ai/` 経由だけで呼ぶ。プロンプトは `prompts/` に版つき。呼ぶたびに model・prompt_version・原価（円・整数、切り上げ）を ai_calls に残す。キーが無いときは決まった文の返事に落とす。
 - 金額は整数（円）。
 - 言葉はネットで普通に使われる言い方にする。造語を作らない。
+- ファイルのパスは「塾のID/」の中だけ（DB の CHECK と、期限つきURLを作る前の `pathIn` の両方）。service_role でURLを作るので、片方だけにしない。
+- 面談とまだの学習予定は重ならない（DB のトリガ。同じ生徒は advisory lock で順番に）。
+- AI は呼ぶ前に `ai_reserve` で枠を取り、終わったら `ai_settle`。上限は schools の列。
+- ログイン後の転送先は `safeNext`（URL として解いて同じオリジンか）。`startsWith('/')` で済ませない。

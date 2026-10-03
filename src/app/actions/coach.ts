@@ -11,6 +11,7 @@ import {
 } from '@/lib/domain/plan';
 import { matchPdfName, parseFreeEntry } from '@/lib/domain/text-match';
 import { mergeSlot } from '@/lib/domain/slots';
+import { pathIn } from '@/lib/domain/paths';
 import { VAGUE, type Task, type World } from '@/lib/domain/types';
 import { loadStudents, loadWorld, type Actor } from '@/lib/data/load';
 import { dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
@@ -375,7 +376,7 @@ export async function autoBookMeetings(weekStartDate: string): Promise<Result<{ 
 export async function prepareQuizUpload(input: { files: { name: string; path: string }[] }): Promise<Result<{ rows: { problem: { name: string; path: string }; answer: { name: string; path: string } | null; materialId: string | null; unitId: string | null; sure: boolean; version: number | null; max: number }[] }>> {
   return withActor([...STAFF], async ({ sb, actor }) => {
     const v = z.object({ files: z.array(z.object({ name: z.string().max(200), path: z.string().max(300) })).max(300) }).parse(input);
-    if (v.files.some(f => !f.path.startsWith(actor.schoolId + '/'))) return fail('ファイルの場所が正しくありません');
+    if (v.files.some(f => !pathIn(f.path, actor.schoolId + '/'))) return fail('ファイルの場所が正しくありません');
     const w = await loadWorld(sb, actor, []);
     const [{ data: mats }, { data: units }, { data: qv }] = await Promise.all([
       sb.from('materials').select('id, name, short_name, subject, kind, review_intervals, keywords, archived_at'),
@@ -411,7 +412,7 @@ export async function prepareQuizUpload(input: { files: { name: string; path: st
 export async function registerQuizVersions(input: { rows: { unitId: string; max: number; problemPath: string; answerPath?: string | null; fileName: string }[] }): Promise<Result<{ count: number; attached: number }>> {
   return withActor([...STAFF], async ({ sb, actor }) => {
     const v = z.object({ rows: z.array(z.object({ unitId: zId, max: z.number().int().min(1).max(1000), problemPath: z.string().max(300), answerPath: z.string().max(300).nullish(), fileName: z.string().max(200) })).min(1).max(300) }).parse(input);
-    if (v.rows.some(r => !r.problemPath.startsWith(actor.schoolId + '/') || (r.answerPath && !r.answerPath.startsWith(actor.schoolId + '/')))) return fail('ファイルの場所が正しくありません');
+    if (v.rows.some(r => !pathIn(r.problemPath, actor.schoolId + '/') || (r.answerPath && !pathIn(r.answerPath, actor.schoolId + '/')))) return fail('ファイルの場所が正しくありません');
     const units = [...new Set(v.rows.map(r => r.unitId))];
     const { data: qv } = await sb.from('quiz_versions').select('unit_id, version').in('unit_id', units);
     const { count: before } = await sb.from('tasks').select('id', { count: 'exact', head: true }).eq('status', 'todo').is('quiz_version_id', null).in('unit_id', units);
@@ -432,7 +433,7 @@ export async function registerQuizVersions(input: { rows: { unitId: string; max:
 export async function registerResource(input: { name: string; path: string; targetStudentId?: string | null }): Promise<Result> {
   return withActor([...STAFF], async ({ sb, actor }) => {
     const v = z.object({ name: z.string().trim().min(1).max(120), path: z.string().max(300), targetStudentId: zId.nullish() }).parse(input);
-    if (!v.path.startsWith(actor.schoolId + '/')) return fail('ファイルの場所が正しくありません');
+    if (!pathIn(v.path, actor.schoolId + '/')) return fail('ファイルの場所が正しくありません');
     const { error } = await sb.from('resources').insert({ name: v.name, file_path: v.path, target_student_id: v.targetStudentId ?? null, created_by: actor.id });
     if (error) return fail(dbError(error));
     done();

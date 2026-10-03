@@ -15,14 +15,26 @@ export interface BotResult {
 }
 
 const MAX_HISTORY = 20;
+/** 保存して画面に出す返事の長さの上限（文字）。DB の上限 4,000 より短くし、超えたら文の切れ目で切る */
+export const MAX_REPLY_CHARS = 1500;
+
+export function clipReply(text: string, max = MAX_REPLY_CHARS): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const at = Math.max(cut.lastIndexOf('\n'), cut.lastIndexOf('。'));
+  return (at > max * 0.6 ? cut.slice(0, at + 1) : cut).trimEnd() + '\n（長くなったので、ここまでにするね）';
+}
 
 /** Actifyくんの返事。キーが無い・失敗・拒否のときは、アプリのデータから作る決まった文の返事にする */
 export async function botReply(args: {
   world: World; studentId: string; info: { name: string; goal?: string; examOn?: string | null; coachName?: string };
   history: ChatTurn[]; text: string; image?: { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'; base64: string };
+  /** false なら AI を呼ばない（上限に達したとき） */
+  useAi?: boolean;
 }): Promise<BotResult> {
   const fallback = () => ruleReply(args.world, args.studentId, args.text, { hasImage: !!args.image, coachName: args.info.coachName });
-  const client = claudeClient();
+  const client = args.useAi === false ? null : claudeClient();
   if (!client) return { reply: fallback() };
 
   const model = env.chatModel();
@@ -37,7 +49,7 @@ export async function botReply(args: {
 
   try {
     const res = await client.beta.messages.create({
-      model, max_tokens: 4000,
+      model, max_tokens: 1500,   // 考える分も含む。返事は8行までと指示し、保存の前に文字数でも切る
       system: [{ type: 'text', text: ACTIFY_CHAT_SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages,
       output_config: { effort: 'low' },   // 雑談と相談：深く考えるより早く返す
@@ -47,7 +59,7 @@ export async function botReply(args: {
     if (res.stop_reason === 'refusal') return { reply: fallback(), call: { ...call, error: `refusal:${res.stop_details?.category ?? 'unknown'}` } };
     const text = res.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('').trim();
     if (!text) return { reply: fallback(), call: { ...call, error: 'empty' } };
-    return { reply: { mood: 'support', text }, call };
+    return { reply: { mood: 'support', text: clipReply(text) }, call };
   } catch (e) {
     return { reply: fallback(), call: { model, promptVersion: ACTIFY_CHAT_PROMPT_VERSION, inputTokens: 0, outputTokens: 0, costJpy: 0, error: errorKind(e) } };
   }

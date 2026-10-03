@@ -15,6 +15,11 @@ export const env = {
   ocrModel: () => process.env.ACTIFY_OCR_MODEL || 'claude-opus-5-5',
   /** AI の原価を円にするときの為替（1ドル何円か）。整数 */
   usdJpy: () => Number(process.env.USD_JPY || 150),
+  /** 1回の呼び出しの見込みの原価（円）。塾の月の予算を超えないかを、呼ぶ前にこの額で確かめる */
+  aiChatEstimateJpy: () => Number(process.env.AI_CHAT_ESTIMATE_JPY || 10),
+  aiOcrEstimateJpy: () => Number(process.env.AI_OCR_ESTIMATE_JPY || 40),
+  /** 招待・パスワードのメールのリンクの戻り先（https://… 末尾の / なし） */
+  siteUrl: need('NEXT_PUBLIC_SITE_URL'),
   /** 期限つきのファイルURLの有効時間（秒） */
   signedUrlSeconds: () => Number(process.env.SIGNED_URL_SECONDS || 300),
 };

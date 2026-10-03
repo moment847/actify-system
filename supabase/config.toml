@@ -1,0 +1,23 @@
+# supabase start（ローカル）と、本番の設定の手本。本番は Dashboard の Authentication でも同じ値にする
+project_id = "actify"
+
+[auth]
+# メールのリンクの {{ .SiteURL }}。本番は https://（Actify の URL）
+site_url = "http://localhost:3000"
+additional_redirect_urls = ["http://localhost:3000/account/password"]
+# 自分で登録はさせない（運営が招待する）
+enable_signup = false
+
+[auth.email]
+enable_signup = false
+double_confirm_changes = true
+
+# 招待とパスワードの決め直しのメールは、/auth/confirm に token_hash を渡す文面にする
+# （標準の {{ .ConfirmationURL }} だと、トークンが URL の # の後ろに付いてサーバで受け取れない）
+[auth.email.template.invite]
+subject = "Actify への招待"
+content_path = "./supabase/templates/invite.html"
+
+[auth.email.template.recovery]
+subject = "Actify のパスワードを決め直す"
+content_path = "./supabase/templates/recovery.html"

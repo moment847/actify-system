@@ -173,12 +173,15 @@ export const coachOpenOn = (w: World, d: DateStr) =>
 export const coachOpenRegistered = (w: World, start: DateStr) => weekDays(start).some(d => coachOpenOn(w, d).length > 0);
 
 /** その週に予約できる時間。講師の面談できる時間のうちほかの生徒が取っていない所。
- *  生徒の勉強できる時間と重なる所・先週と同じ時間・週末 を上に */
-export function meetingSlots(w: World, sid: string, start: DateStr) {
+ *  生徒の勉強できる時間と重なる所・先週と同じ時間・週末 を上に。
+ *  まだの学習予定と重なる時間は出さない（DB でも止める。avoidTasks:false はモックと比べるテストだけ） */
+export function meetingSlots(w: World, sid: string, start: DateStr, opts: { avoidTasks?: boolean } = {}) {
+  const avoid = opts.avoidTasks ?? true;
   const len = w.meetingLength, out: { date: DateStr; time: TimeStr; fit: boolean; same: boolean; score: number }[] = [], last = lastMeeting(w, sid);
   weekDays(start).filter(d => canBook(w, d)).forEach(d => coachOpenOn(w, d).forEach(o => {
     for (let s = toMin(o.start); s + len <= toMin(o.end); s += 30) {
       if (w.meetings.some(m => m.studentId !== sid && m.date === d && toMin(m.time) < s + len && toMin(m.time) + m.len > s)) continue;
+      if (avoid && w.tasks.some(t => t.studentId === sid && t.status === 'todo' && t.date === d && toMin(t.time) < s + len && toMin(t.time) + t.duration > s)) continue;
       const fit = availOn(w, sid, d).some(a => toMin(a.start) <= s && toMin(a.end) >= s + len);
       const same = !!last && dow(last.date) === dow(d) && last.time === toTime(s);
       out.push({ date: d, time: toTime(s), fit, same, score: (fit ? 100 : 0) + (same ? 60 : 0) + [0, 0, 0, 0, 10, 20, 15][dow(d)] - s / 600 });

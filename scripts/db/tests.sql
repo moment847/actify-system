@@ -454,4 +454,126 @@ begin
 end $$;
 reset role;
 
+-- ---------- レビューで見つかった穴（2026-10-03） ----------
+-- T26：別の塾のファイルのパスは、資料・小テスト・目次・チャットの写真のどれにも登録できない
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare u uuid;
+begin
+  begin
+    insert into public.resources (name, file_path) values ('盗み見', 'bbbbbbbb-0000-4000-8000-000000000000/quiz/b.pdf');
+    raise exception 'T26 FAILED: other school path accepted for resources';
+  exception when check_violation then null;
+  end;
+  begin
+    insert into public.resources (name, file_path) values ('上へ', current_setting('test.school_a') || '/../bbbbbbbb-0000-4000-8000-000000000000/quiz/b.pdf');
+    raise exception 'T26 FAILED: dot-dot path accepted';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.resources set file_path = 'bbbbbbbb-0000-4000-8000-000000000000/quiz/b.pdf' where school_id = current_setting('test.school_a')::uuid;
+    raise exception 'T26 FAILED: other school path accepted on update';
+  exception when check_violation then null;
+  end;
+  select id into u from public.material_units limit 1;
+  begin
+    insert into public.quiz_versions (unit_id, version, max_score, problem_path, answer_path)
+      values (u, 99, 20, current_setting('test.school_a') || '/quiz/ok.pdf', 'bbbbbbbb-0000-4000-8000-000000000000/quiz/b.pdf');
+    raise exception 'T26 FAILED: other school answer path accepted';
+  exception when check_violation then null;
+  end;
+  raise notice 'T26 OK: file paths stay inside the school folder';
+end $$;
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  begin
+    insert into public.chat_messages (student_id, sender, body, image_path) values (auth.uid(), 'student', 'x', current_setting('test.school_a') || '/' || current_setting('test.yuma') || '/x.jpg');
+    raise exception 'T26b FAILED: another student image path accepted';
+  exception when check_violation then null;
+  end;
+  raise notice 'T26b OK: chat image must be in own folder';
+end $$;
+
+-- T27：面談の時間と、まだの学習予定は重ならない（どちらから入れても止まる）。終わった予定（記録）は見ない
+reset role;
+insert into public.coach_open_slots (coach_id, on_date, start_time, end_time) values (:'coach', private.local_today(:'hina') + 10, '18:00', '22:00');
+insert into public.meetings (coach_id, student_id, on_date, start_time, length_min) values (:'coach', :'hina', private.local_today(:'hina') + 10, '19:00', 30);
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare d date := private.local_today(current_setting('test.hina')::uuid) + 10; t uuid;
+begin
+  begin
+    insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title) values (current_setting('test.hina')::uuid, d, '18:45', 30, 'mock', '模試の直し');
+    raise exception 'T27 FAILED: task overlapping a meeting accepted';
+  exception when exclusion_violation then null;
+  end;
+  insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title) values (current_setting('test.hina')::uuid, d, '18:00', 60, 'mock', '模試の直し') returning id into t;
+  -- 動かして面談に重ねるのも止まる（18:00〜19:00 はちょうど接するだけなので通っている）
+  begin
+    update public.tasks set duration_min = 75 where id = t;
+    raise exception 'T27 FAILED: stretching into a meeting accepted';
+  exception when exclusion_violation then null;
+  end;
+  -- 学習の予定がある時間に面談は入れられない（講師が直接でも、関数からでも）
+  begin
+    update public.meetings set start_time = '18:30' where student_id = current_setting('test.hina')::uuid and on_date = d;
+    raise exception 'T27 FAILED: meeting moved onto a task';
+  exception when exclusion_violation then null;
+  end;
+  begin
+    perform public.book_meeting(d, '18:15', current_setting('test.hina')::uuid);
+    raise exception 'T27 FAILED: book_meeting onto a task';
+  exception when exclusion_violation then
+    if sqlerrm not like '%学習の予定%' then raise exception 'T27 FAILED: wrong message %', sqlerrm; end if;
+  end;
+  delete from public.tasks where id = t;
+  raise notice 'T27 OK: meetings and planned study never overlap';
+end $$;
+reset role;
+
+-- T28：AI の上限。service_role だけが枠を取れる。同時に1件・1人1日の回数・塾の月の予算
+set role authenticated;
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  begin
+    perform public.ai_reserve(current_setting('test.school_a')::uuid, auth.uid(), 'chat', 10);
+    raise exception 'T28 FAILED: student can reserve AI';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+set role service_role;
+do $$
+declare a bigint; s uuid := current_setting('test.school_a')::uuid; u uuid := current_setting('test.hina')::uuid;
+begin
+  update public.schools set ai_daily_limit_per_user = 2, ai_monthly_budget_jpy = 30 where id = s;
+  a := public.ai_reserve(s, u, 'chat', 10);
+  begin
+    perform public.ai_reserve(s, u, 'chat', 10);
+    raise exception 'T28 FAILED: second call while one is running';
+  exception when raise_exception then if sqlerrm <> 'AI_BUSY' then raise; end if;
+  end;
+  perform public.ai_settle(a, 'claude-opus-5-5', 'actify-chat.v1', 1000, 200, 8, null);
+  a := public.ai_reserve(s, u, 'chat', 10);
+  perform public.ai_settle(a, 'claude-opus-5-5', 'actify-chat.v1', 1000, 200, 8, null);
+  begin
+    perform public.ai_reserve(s, u, 'chat', 10);
+    raise exception 'T28 FAILED: daily limit not enforced';
+  exception when raise_exception then if sqlerrm <> 'AI_DAILY_LIMIT' then raise; end if;
+  end;
+  -- 月の予算（30円）：使った16円 + 見込み20円 > 30円 で止まる（別の人でも）
+  begin
+    perform public.ai_reserve(s, current_setting('test.admin')::uuid, 'toc_ocr', 20);
+    raise exception 'T28 FAILED: budget not enforced';
+  exception when raise_exception then if sqlerrm <> 'AI_BUDGET' then raise; end if;
+  end;
+  update public.schools set ai_daily_limit_per_user = 30, ai_monthly_budget_jpy = 5000 where id = s;
+  raise notice 'T28 OK: AI limits';
+end $$;
+reset role;
+
 \echo 'ALL DB TESTS PASSED'

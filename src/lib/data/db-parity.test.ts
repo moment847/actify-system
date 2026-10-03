@@ -70,7 +70,7 @@ describe.each(Object.keys(fx.perStudent))('DB から読んだ生徒 %s', mockSid
     expect(Object.fromEntries(weekDays(nextWeek).map(d => [d, freeGaps(w, sid, d)]))).toEqual(exp.freeGaps);
     expect(suggestions(w, sid, nextWeek).map(s => ({ key: s.key, kind: s.kind, node: s.node, date: s.date, time: s.time, dur: s.dur }))).toEqual(exp.suggestions);
     for (const wk of [thisWeek, nextWeek])
-      expect(meetingSlots(w, sid, wk).map(x => ({ date: x.date, time: x.time, fit: x.fit, same: x.same }))).toEqual(exp.meetingSlots[wk]);
+      expect(meetingSlots(w, sid, wk, { avoidTasks: false }).map(x => ({ date: x.date, time: x.time, fit: x.fit, same: x.same }))).toEqual(exp.meetingSlots[wk]);
     const blocks = weekBlocks(w, sid, nextWeek).map(b => {
       const g = blockGaps(w, sid, b)[0];
       const cands = g ? candidatesFor(w, sid, { date: b.date, s: g[0], e: g[1] }) : [];

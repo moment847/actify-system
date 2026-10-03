@@ -72,7 +72,7 @@ describe.each(sids)('生徒 %s', sid => {
   it('面談の候補', () => {
     const w = world();
     for (const wk of [thisWeek, nextWeek])
-      expect(meetingSlots(w, sid, wk).map(x => ({ date: x.date, time: x.time, fit: x.fit, same: x.same }))).toEqual(exp.meetingSlots[wk]);
+      expect(meetingSlots(w, sid, wk, { avoidTasks: false }).map(x => ({ date: x.date, time: x.time, fit: x.fit, same: x.same }))).toEqual(exp.meetingSlots[wk]);
   });
 
   it('空きを押したときの候補と、枠にぴったり入る組み合わせ', () => {

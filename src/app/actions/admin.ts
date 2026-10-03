@@ -1,9 +1,11 @@
 'use server';
 // 運営（塾の admin）の操作：教材（目次の写真から登録）とアカウント
 import { revalidatePath } from 'next/cache';
-import { headers } from 'next/headers';
 import { z } from 'zod';
 import { readToc } from '@/lib/ai/toc-ocr';
+import { pathIn } from '@/lib/domain/paths';
+import { env } from '@/lib/env';
+import { reserveAi, settleAi, type AiBlock } from '@/server/ai-budget';
 import { parsePastedBooks } from '@/lib/domain/materials';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { dbError, fail, ok, withActor, zId, type Result } from '@/server/result';
@@ -22,17 +24,31 @@ export interface TocDraft { name: string; subject: z.infer<typeof zSubject>; kin
 export async function readTocImages(input: { paths: string[] }): Promise<Result<{ drafts: TocDraft[] }>> {
   return withActor(['admin'], async ({ actor }) => {
     const v = z.object({ paths: z.array(z.string().max(300)).min(1).max(30) }).parse(input);
-    if (v.paths.some(p => !p.startsWith(actor.schoolId + '/'))) return fail('写真の場所が正しくありません');
+    if (v.paths.some(p => !pathIn(p, actor.schoolId + '/'))) return fail('写真の場所が正しくありません');
     const admin = createAdminClient(), drafts: TocDraft[] = [];
+    let stop: AiBlock | null = env.anthropicApiKey() ? null : 'unknown';
     for (const path of v.paths) {
       const fileName = path.split('/').pop()!.replace(/\.[^.]+$/, '');
       const empty: TocDraft = { name: fileName, subject: 'english', kind: 'input', lines: [], imagePath: path, unread: true };
+      if (stop) { drafts.push(empty); continue; }
       const { data: blob } = await admin.storage.from('toc-images').download(path);
       const type = blob?.type as (typeof IMAGE_TYPES)[number];
       if (!blob || !IMAGE_TYPES.includes(type) || blob.size > 5 * 1024 * 1024) { drafts.push(empty); continue; }
-      const { result, call } = await readToc({ mediaType: type, base64: Buffer.from(await blob.arrayBuffer()).toString('base64') });
-      if (call) await admin.from('ai_calls').insert({ school_id: actor.schoolId, user_id: actor.id, purpose: 'toc_ocr', model: call.model, prompt_version: call.promptVersion, input_tokens: call.inputTokens, output_tokens: call.outputTokens, cost_jpy: call.costJpy, error: 'error' in call ? call.error ?? null : null });
-      drafts.push(result && result.lines.length ? { name: result.name || fileName, subject: result.subject, kind: result.kind, lines: result.lines, imagePath: path, unread: false } : empty);
+      // 1枚ごとに枠を取る（1人1日の回数・塾の月の予算）。取れなくなったら、残りは手入力の下書きにする
+      const r = await reserveAi(actor.schoolId, actor.id, 'toc_ocr', env.aiOcrEstimateJpy());
+      if ('blocked' in r) { stop = r.blocked; drafts.push(empty); continue; }
+      let call: Awaited<ReturnType<typeof readToc>>['call'] = null;
+      try {
+        const res = await readToc({ mediaType: type, base64: Buffer.from(await blob.arrayBuffer()).toString('base64') });
+        call = res.call;
+        drafts.push(res.result && res.result.lines.length ? { name: res.result.name || fileName, subject: res.result.subject, kind: res.result.kind, lines: res.result.lines, imagePath: path, unread: false } : empty);
+      } finally {
+        await settleAi(r.id, call ? { ...call, error: 'error' in call ? call.error ?? null : null } : null);
+      }
+    }
+    if (stop && stop !== 'unknown') {
+      const why = stop === 'budget' ? '今月の塾の AI の利用枠を使い切りました' : stop === 'daily_limit' ? '今日の読み取りの回数を使い切りました' : '前の読み取りが終わっていません';
+      return ok(`${why}。読み取れなかった写真は、範囲を1行ずつ入れてください`, { drafts });
     }
     const unread = drafts.filter(d => d.unread).length;
     return ok(unread ? `${unread}枚は読み取れませんでした。範囲を1行ずつ入れてください` : `${drafts.length}冊を読み取りました。直してから登録してください`, { drafts });
@@ -54,7 +70,7 @@ const Draft = z.object({ name: z.string().trim().min(1, '教材名を入れて�
 export async function registerMaterials(input: { drafts: z.input<typeof Draft>[] }): Promise<Result<{ count: number }>> {
   return withActor(['admin'], async ({ sb, actor }) => {
     const v = z.object({ drafts: z.array(Draft).min(1).max(50) }).parse(input);
-    if (v.drafts.some(d => d.imagePath && !d.imagePath.startsWith(actor.schoolId + '/'))) return fail('写真の場所が正しくありません');
+    if (v.drafts.some(d => d.imagePath && !pathIn(d.imagePath, actor.schoolId + '/'))) return fail('写真の場所が正しくありません');
     for (const d of v.drafts) {
       const { data: m, error } = await sb.from('materials').insert({
         name: d.name, short_name: d.name.slice(0, 8), subject: d.subject, kind: d.kind,
@@ -135,8 +151,8 @@ export async function createAccount(input: z.input<typeof NewAccount>): Promise<
   return withActor(['admin'], async ({ actor }) => {
     const v = NewAccount.parse(input);
     const admin = createAdminClient();
-    const origin = (await headers()).get('origin') ?? '';
-    const { data, error } = await admin.auth.admin.inviteUserByEmail(v.email, { redirectTo: `${origin}/auth/callback?next=/account/password` });
+    // 招待のメールのリンクは /auth/confirm（token_hash を verifyOtp で確かめる）。メールの文面は supabase/templates/invite.html
+    const { data, error } = await admin.auth.admin.inviteUserByEmail(v.email, { redirectTo: `${env.siteUrl()}/account/password` });
     if (error || !data.user) return fail(error?.message?.includes('already') ? 'このメールアドレスはもう使われています' : '招待のメールを送れませんでした');
     const uid = data.user.id;
     const undo = async (why: string) => { await admin.auth.admin.deleteUser(uid); return fail(why); };
