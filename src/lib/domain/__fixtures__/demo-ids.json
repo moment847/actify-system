@@ -1,0 +1,36 @@
+{
+ "today": "2026-10-02",
+ "school": "f013ee69-3c02-45b0-a988-1ae377a443ed",
+ "people": {
+  "s1": {
+   "id": "3cdb25bb-3f19-4e54-a9c6-e82612fa4b13",
+   "email": "hina@demo.actify.jp"
+  },
+  "s2": {
+   "id": "0f7f018a-db4c-4ce9-a7cb-d68e84ce6ced",
+   "email": "yuma@demo.actify.jp"
+  },
+  "s3": {
+   "id": "aac7a176-8776-40aa-a34c-716dac7a664d",
+   "email": "misaki@demo.actify.jp"
+  },
+  "s4": {
+   "id": "2c7cf734-4a67-464c-a25d-4b0707c254d9",
+   "email": "ren@demo.actify.jp"
+  },
+  "c1": {
+   "id": "bb1184fa-70fd-4a3c-a670-25b39f594dd2",
+   "email": "sasaki@demo.actify.jp"
+  },
+  "a1": {
+   "id": "a12fd8d9-159b-49a6-a866-5e9108007dcf",
+   "email": "admin@demo.actify.jp"
+  }
+ },
+ "materials": {
+  "en": "17eb0566-3158-46da-a5a9-cfeb7dad82b3",
+  "rd": "11e0928d-80d6-45fc-a1ce-30db08ebd26b",
+  "ma": "0b5a62b5-0758-48fc-a62b-8e0fd2db5b2f",
+  "jp": "9de94963-a4ff-45bf-ab17-86445fc9919b"
+ }
+}
