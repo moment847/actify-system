@@ -1,36 +1,98 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Actify（バックエンド）
 
-## Getting Started
+大学受験生の毎日の自習を、担当の講師が週ごとに計画して見守る学習管理サービス。
+画面の動きと決まりごとは、モック v19（`reference/mock-v19/`）と、サービス全体のレポート（`reference/Actify-サービス全体レポート.md`）が正しい形。
 
-First, run the development server:
+この段階でできているのは **バックエンド全部**（DB・権限・ファイル置き場・計算・サーバの処理・AI・ログイン）。
+画面はログインと確認用の仮の画面だけで、モック v19 の見た目の移植は次の段階。
+
+## できていること
+
+| 部分 | 中身 | 確かめ方 |
+| --- | --- | --- |
+| DB | 21テーブル。複数の塾に売る前提で、すべての行に塾のIDを持ち、親子の塾のIDは複合外部キーでそろえる | `pnpm db:verify`（DBテスト25本） |
+| 権限（RLS） | 生徒は自分だけ／講師は担当の生徒だけ／運営は自分の塾の全件。AI相談は生徒本人だけ（講師にも運営にも見せない）。講師メモと小テストの版は生徒に見せない。塾どうしは完全に分ける | 同上（T5〜T24） |
+| DBで守る決まり | 同じ生徒に同じ版の小テストは二度付けない／1つの範囲の「まだの予定」は1件だけ／範囲は入れた順ではなく日付の順にそろう／新しい版を登録すると待っていた予定に自動で付く／面談は前日まで・講師が公開した時間の中・その週の1回・講師の面談は重ならない | 同上 |
+| 計算 | 再テストの時期・参考書の進み（今日の目安・このペースで終わる日）・空きを押したときの候補・枠にぴったり入る組み合わせ・週の案・面談の候補・気になる点・小テスト不足・PDFのファイル名の読み取り・自由に書く欄の読み取り | `pnpm test`（モックを実際に動かした答えと同じかを40本、DBから読んだデータでも同じかを12本） |
+| サーバの処理 | 生徒・講師・運営の操作（`src/app/actions/`）、画面ごとの中身（`src/server/views.ts`）、面談の .ics 書き出し（`/api/meetings.ics`） | 型チェック・ビルド |
+| AI | Actifyくんの返事と、目次の写真の読み取り（Claude）。キーが無い・失敗したときは決まった文の返事に落とす。呼ぶたびに原価を円で `ai_calls` に残す | 型チェック（実際の呼び出しはキーを入れてから） |
+| ログイン | メールとパスワード。運営が招待のメールを送り、本人がパスワードを決める | ビルド後に `/login` が開くこと |
+
+## 環境変数
+
+`.env.example` を `.env.local` に写して埋める。
+
+| 名前 | 必須 | 中身 |
+| --- | --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | ○ | Supabase の URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | ○ | anon キー（ブラウザに出てよい） |
+| `SUPABASE_SERVICE_ROLE_KEY` | ○ | サーバだけで使う。アカウント作成・期限つきのファイルURL・Actifyくんの返事の書き込み |
+| `ANTHROPIC_API_KEY` | | Actifyくんの返事と目次の読み取り。無ければ決まった文の返事・目次は手入力 |
+| `ACTIFY_CHAT_MODEL` / `ACTIFY_OCR_MODEL` | | 既定は `claude-opus-5-5` |
+| `USD_JPY` | | AI の原価を円にする為替（既定 150） |
+| `SIGNED_URL_SECONDS` | | ファイルの期限つきURLの有効時間（既定 300秒） |
+
+## ローカルで動かす
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
+pnpm db:verify        # 使い捨ての PostgreSQL でマイグレーション・seed・DBテスト（Docker 不要。PostgreSQL 16 のサーバが要る）
+pnpm test             # 計算のテスト
+pnpm typecheck && pnpm lint && pnpm build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Supabase につなぐとき：
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+supabase link --project-ref <プロジェクトのID>
+supabase db push                  # supabase/migrations を本番に流す
+psql "$DATABASE_URL" -f supabase/seed.sql   # デモの塾を入れる（本番の塾には流さない）
+pnpm db:seed:files                # デモの PDF を Storage に置く
+pnpm dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## デモの塾（seed）
 
-## Learn More
+中身はモック v19 と同じ（生徒4人・講師1人・運営1人・教材4冊・9月7日からの記録129件・面談）。パスワードはすべて `actify-demo-2026`。
 
-To learn more about Next.js, take a look at the following resources:
+| 役割 | メール |
+| --- | --- |
+| 生徒（山田 陽菜） | hina@demo.actify.jp |
+| 生徒 | yuma@ / misaki@ / ren@demo.actify.jp |
+| 講師（佐々木 雄光） | sasaki@demo.actify.jp |
+| 運営 | admin@demo.actify.jp |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+日付はモックと同じく 2026年10月2日を「今日」として作る。今日を基準にしたいときは
+`node scripts/seed/build-seed.mjs --today=2026-11-20`（7日の倍数でずらすと曜日がそろう）で作り直す。
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## 決めたこと（違えば直します）
 
-## Deploy on Vercel
+- **予定・勉強できる時間・面談は「暦の上の日付と時刻」で持つ**（date + time）。週のカレンダーで扱う値なので、生徒のタイムゾーン（無ければ塾のタイムゾーン）の壁時計。いつ起きたか（完了した時刻など）は UTC の timestamptz。「今日」は本人のタイムゾーンで決める（DB の `private.local_today` と `localToday`）。
+- **生徒は予定を直接書き換えられない**。始める・一時停止・完了・未完了に戻す・予備時間にやり残しを入れる は DB の関数から。勉強時間はタイマーの計測（止めていた時間は数えない、5分未満は押し間違いとして予定の時間、上限は予定の3倍）。
+- **ひとことは生徒本人だけが書ける**（講師が代わりに完了しても、生徒の声は書かない）。返信は講師。
+- **小テストの PDF は、生徒が置き場を直接見られない**。予定に付いた版だけ、サーバが確かめてから期限つきのURLを作る（先の小テストの解答を見られないように）。
+- **AI相談は講師にも運営にも見せない**（画面にもそう書く）。原価（ai_calls）は運営が見られる。
+- **やり残しの「時間だけの予定」（予備時間など）は、週の案や候補に出さない**（モックは出していた。予備時間をやり残しとして入れ直す意味が無いため）。
+- 役割を変えられるのは、まだ記録や担当が無い人だけ。記録がある人は新しいアカウントを作る。
+- 講師を退会にすると、担当から外れる。
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## まだ無いもの
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- 画面（モック v19 の移植）。`src/server/views.ts` が画面ごとの中身を返すので、そこから描く
+- Supabase の本番プロジェクトでの通し確認（この段階は使い捨ての PostgreSQL での確認まで。Supabase の Auth・Storage・PostgREST を通した動きは、プロジェクトを作ってから確かめる）
+- 保護者の画面・LINE 連携・決済・通知
+- 複数の講師が1人の生徒を持つときの面談（今は最初に担当になった講師と予約する）
+
+## ファイル
+
+| 場所 | 中身 |
+| --- | --- |
+| `supabase/migrations/` | テーブル・権限・DBの関数・ファイル置き場 |
+| `supabase/seed.sql` | デモの塾（`scripts/seed/build-seed.mjs` が作る。手で直さない） |
+| `scripts/db/` | DB の確かめ（`verify.sh`・`tests.sql`・Supabase の代わりの最小の仕組み） |
+| `src/lib/domain/` | 計算（画面にも DB にも依存しない）。モックから移したもの |
+| `src/lib/data/` | DB から読んで計算の形にする |
+| `src/lib/ai/` | Actifyくんの返事・目次の読み取り・原価。プロンプトは `prompts/` に版つきで置く |
+| `src/app/actions/` | サーバの処理（生徒・講師・運営・勉強できる時間） |
+| `src/server/views.ts` | 画面ごとの中身 |
+| `reference/` | モック v19 のコードとサービスのレポート（参考。アプリには入らない） |

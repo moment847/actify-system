@@ -53,6 +53,11 @@ done
 echo "==> seed"
 run_as "$PSQL -f '$WORK/sql/seed.sql'"
 
+echo "==> dump demo rows (for db-parity.test.ts)"
+run_as "$PSQL -o '$WORK/demo-rows.json' -f '$WORK/sql/dump-demo.sql'"
+mkdir -p "$REPO_DIR/src/lib/data/__fixtures__"
+cp "$WORK/demo-rows.json" "$REPO_DIR/src/lib/data/__fixtures__/demo-rows.json"
+
 echo "==> tests"
 run_as "$PSQL -f '$WORK/sql/tests.sql'"
 

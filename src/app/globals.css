@@ -1,49 +1,12 @@
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-html {
-  height: 100%;
-}
-
-html,
-body {
-  max-width: 100vw;
-  overflow-x: hidden;
-}
-
-body {
-  min-height: 100%;
-  display: flex;
-  flex-direction: column;
-  color: var(--foreground);
-  background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
-}
+/* いまは確認用の最小の見た目。画面の作り直し（モック v19 の見た目の移植）は次の段階 */
+:root { --ink: #14223d; --sub: #4a5a75; --line: #e1e6ee; --blue: #1c64f2; --red: #c62828; color-scheme: light; }
+* { box-sizing: border-box }
+body { margin: 0; font-family: system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; color: var(--ink); background: #fff; line-height: 1.6; word-break: keep-all; overflow-wrap: break-word }
+main { max-width: 960px; margin: 0 auto; padding: 24px 16px }
+h1 { font-size: 24px; margin: 0 0 16px } h2 { font-size: 16px; margin: 24px 0 8px; padding-top: 12px; border-top: 1px solid var(--line) }
+label { display: grid; gap: 4px; font-size: 14px; color: var(--sub) }
+input { font: inherit; font-size: 16px; padding: 10px 12px; border: 1px solid #c7d0dc; border-radius: 4px; color: var(--ink) }
+button { font: inherit; padding: 10px 16px; border: 0; border-radius: 4px; background: var(--blue); color: #fff; font-weight: 600; cursor: pointer }
+.form { display: grid; gap: 12px; max-width: 360px }
+.err { color: var(--red); font-size: 14px } .muted { color: var(--sub); font-size: 14px }
+table { border-collapse: collapse; width: 100%; font-size: 14px } td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line) }

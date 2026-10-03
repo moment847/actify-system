@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // モックの元のコード（参考として置いているだけで、アプリには入らない）
+    "reference/**",
   ]),
 ]);
 
