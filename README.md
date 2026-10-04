@@ -53,6 +53,36 @@ pnpm db:seed:files                # デモの PDF を Storage に置く
 pnpm dev
 ```
 
+## Supabase の本番プロジェクト（2026-10-04 作成）
+
+| 項目 | 値 |
+| --- | --- |
+| プロジェクト | `actify`（ID `bbhqujcjohpjhwghoudf`、東京リージョン） |
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://bbhqujcjohpjhwghoudf.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | publishable key `sb_publishable_wYzJu5VzZIjfXiDPEsQVtg_FqvHlSWW`（ブラウザに出てよい鍵） |
+| `SUPABASE_SERVICE_ROLE_KEY` | Dashboard → Project Settings → API Keys の secret key。リポジトリには入れない |
+
+入っているもの：マイグレーション6本（面談の予約と取り消しの2関数を除く。下）とデモの塾。
+確かめたこと：
+- 表の中身（20表）と、関数・RLS・トリガ・制約・索引・列・権限・置き場の定義が、ローカルの `pnpm db:verify` と同じ（表ごと・種類ごとの指紋を突き合わせ）
+- 生徒・講師・運営・未ログインに成り代わって、見える範囲と、止めるべき書き込み（直接の書き換え・他人の予定・満点超え・講師メモ・他の塾のパス・役割の変更・AI の上限・ai_reserve）が止まること。確かめた変更はすべて取り消してある
+
+**まだ手でやること**
+1. 面談の予約 `book_meeting` と取り消し `cancel_meeting` を入れる。中身はマイグレーションと同じ。
+   面談の行を消す文を含むため、接続ツールからは承認待ちで止まった。`supabase/manual/meeting-functions.sql` を SQL Editor に貼って流す
+2. Dashboard → Authentication：Email Templates に `supabase/templates/` の2通、URL Configuration の Site URL、Sign up を切る
+3. デモの PDF を置く：`.env.local` に secret key を入れて `pnpm db:seed:files`
+4. 任意：Pro プランにしたら、漏れたパスワードを拒む設定（Leaked password protection）を入れる
+
+**マイグレーションの記録について**：本番には MCP 経由で入れたので、記録の番号がファイル名と違う
+（`20261004064505 core_tables` ほか9件。関数のファイルは4つに分けて入れた）。
+Supabase CLI の `supabase db push` を使い始める前に、記録をファイルにそろえる：
+
+```bash
+supabase migration repair --status reverted 20261004064505 20261004064739 20261004071008 20261004073116 20261004073131 20261004073442 20261004073656 20261004073734 20261004073814
+supabase migration repair --status applied 20261003000000 20261003000100 20261003000200 20261003000300 20261003000400 20261003000500
+```
+
 ## Supabase の設定（招待のメール）
 
 招待とパスワードの決め直しのメールは、リンクを `/auth/confirm?token_hash=…&type=…` にした文面にする（`supabase/templates/`）。
@@ -109,7 +139,7 @@ AI を呼ぶ前に、DB の `ai_reserve` が枠を取る（塾ごとに順番に
 ## まだ無いもの
 
 - 画面（モック v19 の移植）。`src/server/views.ts` が画面ごとの中身を返すので、そこから描く
-- **Supabase の実環境での通し確認（本番に出す前に必ず）**。この段階は使い捨ての PostgreSQL での確認まで。招待のメール → パスワード → ログイン、ファイルの置き場と期限つきURL、PostgREST を通した各操作は、プロジェクトを作ってから確かめる
+- **Supabase の API を通した通し確認**。DB の中身と権限は本番プロジェクトで確かめた（上）。招待のメール → パスワード → ログイン、期限つきURL、PostgREST を通した各操作は、アプリを起動して確かめる（この作業環境からは Supabase の API に届かなかった）
 - 保護者の画面・LINE 連携・決済・通知
 - 複数の講師が1人の生徒を持つときの面談（今は最初に担当になった講師と予約する）
 
