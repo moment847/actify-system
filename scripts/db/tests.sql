@@ -948,4 +948,24 @@ begin
 end $$;
 reset role;
 
+-- T43：LINE の鍵が入っているかは講師・運営だけが分かる（鍵そのものは見えない）。点数は小数2桁（合格最低点 129.95）まで入る
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare r uuid;
+begin
+  if not public.line_ready() then raise exception 'T43 FAILED: coach line_ready'; end if;
+  insert into public.exam_results (student_id, kind, title, taken_on, exam_year, total_score, total_max, passing_score)
+    values (current_setting('test.hina')::uuid, 'past', 'テスト大学', '2026-09-01', 2025, 118, 200, 129.95) returning id into r;
+  if (select passing_score from public.exam_results where id = r) <> 129.95 then raise exception 'T43 FAILED: passing score rounded'; end if;
+  delete from public.exam_results where id = r;
+end $$;
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  if public.line_ready() then raise exception 'T43 FAILED: student line_ready'; end if;
+  raise notice 'T43 OK: line_ready and 2-decimal scores';
+end $$;
+reset role;
+
 \echo 'ALL DB TESTS PASSED'

@@ -28,7 +28,7 @@ export function LoginForm({ next }: { next: string }) {
       {error && <p className="err" role="alert">{error}</p>}
       <button disabled={busy}>{busy ? 'ログイン中…' : 'ログイン'}</button>
       <p className="muted">
-        {sent ? 'パスワードを決め直すメールを送りました。' : <a href="#" onClick={e => { e.preventDefault(); forgot((e.currentTarget.closest('form')!.elements.namedItem('email') as HTMLInputElement).value); }}>パスワードを忘れたとき</a>}
+        {sent ? 'パスワードを決め直すメールを送りました。' : <a href="#" onClick={e => { e.preventDefault(); forgot((e.currentTarget.closest('form')!.elements.namedItem('email') as HTMLInputElement).value); }}>はじめての方・パスワードを忘れた方</a>}
       </p>
     </form>
   );

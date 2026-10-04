@@ -142,6 +142,12 @@ begin
   return g.id;
 end $$;
 
+-- 塾の LINE の鍵が入っているか（鍵そのものは見せない）。講師・運営の画面で「LINE の設定がまだ」を出すため
+create function public.line_ready() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select private.is_staff() and exists (select 1 from public.school_line_channels c where c.school_id = private.my_school());
+$$;
+
 -- 週の報告を送った記録（同じ週に二度送らない）。書くのはサーバだけ
 create table public.weekly_reports (
   id bigint generated always as identity primary key,
@@ -170,9 +176,9 @@ create table public.exam_results (
   provider text not null default '' check (length(provider) <= 40),         -- 河合塾・駿台など（模試）
   taken_on date not null,
   exam_year int check (exam_year between 1990 and 2100),                   -- 過去問の年度
-  total_score numeric(6, 1) check (total_score >= 0),
-  total_max numeric(6, 1) check (total_max > 0),
-  passing_score numeric(6, 1) check (passing_score >= 0),                  -- 合格最低点（過去問）
+  total_score numeric(7, 2) check (total_score >= 0),
+  total_max numeric(7, 2) check (total_max > 0),
+  passing_score numeric(7, 2) check (passing_score >= 0),                  -- 合格最低点（過去問。公表値は 129.95 のように小数2桁がある）
   deviation numeric(4, 1) check (deviation between 0 and 100),             -- 偏差値（模試）
   target text not null default '' check (length(target) <= 80),             -- 判定を出した志望校（模試）
   judgement text check (judgement in ('A', 'B', 'C', 'D', 'E')),
@@ -192,8 +198,8 @@ create table public.exam_subject_scores (
   result_id uuid not null,
   school_id uuid not null,
   subject text not null check (length(trim(subject)) between 1 and 20),
-  score numeric(6, 1) check (score >= 0),
-  max_score numeric(6, 1) check (max_score > 0),
+  score numeric(7, 2) check (score >= 0),
+  max_score numeric(7, 2) check (max_score > 0),
   deviation numeric(4, 1) check (deviation between 0 and 100),
   seq int not null default 0,
   primary key (result_id, subject),
@@ -472,6 +478,8 @@ revoke all on all sequences in schema public from anon;
 -- 関数：生徒・講師・運営が呼ぶものは authenticated、サーバだけのものは service_role
 revoke all on function public.set_main_coach(uuid, uuid) from public, anon;
 revoke all on function public.renew_link_code(uuid) from public, anon;
+revoke all on function public.line_ready() from public, anon;
+grant execute on function public.line_ready() to authenticated, service_role;
 grant execute on function public.set_main_coach(uuid, uuid), public.renew_link_code(uuid) to authenticated, service_role;
 revoke all on function public.link_guardian_line(uuid, text, text) from public, anon, authenticated;
 revoke all on function public.enqueue_due_notifications() from public, anon, authenticated;

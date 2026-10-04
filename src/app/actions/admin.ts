@@ -8,6 +8,11 @@ import { env } from '@/lib/env';
 import { reserveAi, settleAi, type AiBlock } from '@/server/ai-budget';
 import { parsePastedBooks } from '@/lib/domain/materials';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { dateAdd, localToday, weekStart } from '@/lib/domain/dates';
+import { schoolMetrics, type SchoolMetrics } from '@/lib/domain/metrics';
+import { seal } from '@/lib/integrations/secret-box';
+import { createCheckout, createCustomer, createPortal } from '@/lib/integrations/stripe';
+import { countSeats } from '@/server/billing';
 import { changed, dbError, fail, ok, withActor, zId, type Result } from '@/server/result';
 
 const done = () => revalidatePath('/', 'layout');
@@ -216,5 +221,138 @@ export async function aiCostSummary(): Promise<Result<{ month: string; purpose: 
       x.calls++; x.costJpy += r.cost_jpy; if (r.error) x.errors++; m.set(k, x);
     }
     return ok(undefined, [...m.values()]);
+  });
+}
+
+// ---------- 主担当・副担当 ----------
+/** 主担当を決める（面談の予約・返信待ちの数は主担当に入る）。その講師がまだ担当でなければ先に担当にする */
+export async function setMainCoach(input: { studentId: string; coachId: string }): Promise<Result> {
+  return withActor(['admin'], async ({ sb }) => {
+    const v = z.object({ studentId: zId, coachId: zId }).parse(input);
+    const { data: has } = await sb.from('coach_assignments').select('coach_id').eq('student_id', v.studentId).eq('coach_id', v.coachId).maybeSingle();
+    if (!has) { const { error } = await sb.from('coach_assignments').insert({ coach_id: v.coachId, student_id: v.studentId }); if (error) return fail(dbError(error)); }
+    const { error } = await sb.rpc('set_main_coach', { p_student: v.studentId, p_coach: v.coachId });
+    if (error) return fail(dbError(error));
+    done(); return ok('主担当にしました');
+  });
+}
+
+// ---------- 塾の LINE 公式アカウント ----------
+const LineSettings = z.object({
+  basicId: z.string().trim().toLowerCase().regex(/^@[a-z0-9._-]{2,30}$/, 'ベーシックID は @ から始まる形で入れてください（例：@123abcde）'),
+  channelSecret: z.string().trim().regex(/^[0-9a-f]{32}$/i, 'チャネルシークレットは32文字の英数字です').optional(),
+  accessToken: z.string().trim().min(100, 'チャネルアクセストークン（長期）を貼り付けてください').max(400).optional(),
+});
+
+/**
+ * LINE の設定（LINE Official Account Manager と LINE Developers で作った値）。
+ * 鍵は暗号にして service_role だけが読める表に置く。画面には「入っているか」しか返さない
+ */
+export async function saveLineSettings(input: z.input<typeof LineSettings>): Promise<Result<{ webhookUrl: string }>> {
+  return withActor(['admin'], async ({ sb, actor }) => {
+    const v = LineSettings.parse(input);
+    const bad = changed(await sb.from('schools').update({ line_basic_id: v.basicId }, { count: 'exact' }).eq('id', actor.schoolId), '塾が見つかりません');
+    if (bad) return fail(bad);
+    if (v.channelSecret || v.accessToken) {
+      const admin = createAdminClient();
+      const { data: cur } = await admin.from('school_line_channels').select('channel_secret_enc, access_token_enc').eq('school_id', actor.schoolId).maybeSingle();
+      if (!cur && !(v.channelSecret && v.accessToken)) return fail('はじめはチャネルシークレットとアクセストークンの両方を入れてください');
+      const { error } = await admin.from('school_line_channels').upsert({
+        school_id: actor.schoolId,
+        channel_secret_enc: v.channelSecret ? seal(v.channelSecret, env.secretsKey()) : cur!.channel_secret_enc,
+        access_token_enc: v.accessToken ? seal(v.accessToken, env.secretsKey()) : cur!.access_token_enc,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'school_id' });
+      if (error) return fail(dbError(error));
+    }
+    done();
+    return ok('保存しました。LINE Developers の Webhook URL に下の URL を入れ、「Webhook の利用」をオンにしてください', { webhookUrl: `${env.siteUrl()}/api/line/webhook/${actor.schoolId}` });
+  });
+}
+
+// ---------- 運営の数字 ----------
+export async function schoolMetricsView(): Promise<Result<SchoolMetrics>> {
+  return withActor(['admin'], async ({ sb, actor }) => {
+    const since = dateAdd(weekStart(actor.today), -7 * 8);
+    const sinceTs = new Date(Date.parse(since + 'T00:00:00Z') - 864e5).toISOString();
+    const [{ data: people }, { data: ca }, tasks, feedback, replies] = await Promise.all([
+      sb.from('profiles').select('id, role, display_name, status, created_at, timezone').in('role', ['student', 'coach']).eq('status', 'active'),
+      sb.from('coach_assignments').select('coach_id, student_id, is_main'),
+      pages<{ student_id: string; on_date: string }>((a, b) => sb.from('tasks').select('student_id, on_date').eq('status', 'done').gte('on_date', since).range(a, b)),
+      pages<{ task_id: string; student_id: string; created_at: string }>((a, b) => sb.from('task_feedback').select('task_id, student_id, created_at').gte('created_at', sinceTs).range(a, b)),
+      pages<{ task_id: string; coach_id: string | null; created_at: string }>((a, b) => sb.from('task_replies').select('task_id, coach_id, created_at').gte('created_at', sinceTs).range(a, b)),
+    ]);
+    const students = (people ?? []).filter(p => p.role === 'student').map(p => ({
+      id: p.id, name: p.display_name, joinedOn: localToday(p.timezone || actor.timeZone, new Date(p.created_at)),
+      coachIds: (ca ?? []).filter(a => a.student_id === p.id).map(a => a.coach_id),
+      mainCoachId: (ca ?? []).find(a => a.student_id === p.id && a.is_main)?.coach_id ?? null,
+    }));
+    const doneDates = new Map<string, string[]>();
+    tasks.forEach(t => doneDates.set(t.student_id, [...(doneDates.get(t.student_id) ?? []), t.on_date]));
+    return ok(undefined, schoolMetrics({
+      today: actor.today, now: new Date(), students,
+      coaches: (people ?? []).filter(p => p.role === 'coach').map(p => ({ id: p.id, name: p.display_name })),
+      doneDates,
+      feedback: feedback.map(f => ({ taskId: f.task_id, studentId: f.student_id, at: f.created_at })),
+      replies: replies.map(r => ({ taskId: r.task_id, coachId: r.coach_id, at: r.created_at })),
+    }));
+  });
+}
+
+async function pages<T>(make: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await make(from, from + 999);
+    if (error) throw new Error(error.message);
+    out.push(...(data ?? []));
+    if (!data || data.length < 1000) return out;
+  }
+}
+
+// ---------- Actify の月額（塾が払う） ----------
+export interface BillingView { status: string; seats: number; activeStudents: number; currentPeriodEnd: string | null; trialEnd: string | null; cancelAtPeriodEnd: boolean; ready: boolean }
+
+export async function billingView(): Promise<Result<BillingView>> {
+  return withActor(['admin'], async ({ sb, actor }) => {
+    const [{ data: b }, { count }] = await Promise.all([
+      sb.from('school_billing').select('status, seats, current_period_end, trial_end, cancel_at_period_end').eq('school_id', actor.schoolId).maybeSingle(),
+      sb.from('profiles').select('id', { count: 'exact', head: true }).eq('role', 'student').eq('status', 'active'),
+    ]);
+    return ok(undefined, { status: b?.status ?? 'none', seats: b?.seats ?? 0, activeStudents: count ?? 0, currentPeriodEnd: b?.current_period_end ?? null,
+      trialEnd: b?.trial_end ?? null, cancelAtPeriodEnd: b?.cancel_at_period_end ?? false, ready: !!(env.stripeSecretKey() && env.stripePriceId()) });
+  });
+}
+
+/** 契約を始める（Stripe の支払いページへ）。カードの入力は Stripe の画面で行い、Actify はカードの番号を持たない */
+export async function startCheckout(): Promise<Result<{ url: string }>> {
+  return withActor(['admin'], async ({ actor }) => {
+    const key = env.stripeSecretKey(), price = env.stripePriceId();
+    if (!key || !price) return fail('支払いの設定がまだです（Actify の運営にお問い合わせください）');
+    const admin = createAdminClient();
+    const { data: b } = await admin.from('school_billing').select('stripe_customer_id, stripe_subscription_id, status').eq('school_id', actor.schoolId).maybeSingle();
+    if (b?.stripe_subscription_id && !['canceled', 'incomplete_expired'].includes(b.status)) return fail('もう契約しています。変更は「支払いの管理」から');
+    let customer = b?.stripe_customer_id ?? null;
+    if (!customer) {
+      const { data: u } = await admin.auth.admin.getUserById(actor.id);
+      customer = (await createCustomer(key, { name: actor.schoolName, email: u.user?.email ?? undefined, schoolId: actor.schoolId })).id;
+      await admin.from('school_billing').upsert({ school_id: actor.schoolId, stripe_customer_id: customer, updated_at: new Date().toISOString() }, { onConflict: 'school_id' });
+    }
+    const seats = await countSeats(admin, actor.schoolId);
+    // 無料期間は初めての契約だけ（解約して契約し直したときは付けない）
+    const s = await createCheckout(key, { customer, price, seats, schoolId: actor.schoolId, trialDays: b?.stripe_subscription_id ? 0 : env.stripeTrialDays(),
+      successUrl: `${env.siteUrl()}/admin?billing=done`, cancelUrl: `${env.siteUrl()}/admin?billing=cancel` });
+    return ok(undefined, { url: s.url });
+  });
+}
+
+/** 支払いの管理（カードの変更・請求書・解約）は Stripe の画面で */
+export async function openBillingPortal(): Promise<Result<{ url: string }>> {
+  return withActor(['admin'], async ({ actor }) => {
+    const key = env.stripeSecretKey();
+    if (!key) return fail('支払いの設定がまだです');
+    const { data: b } = await createAdminClient().from('school_billing').select('stripe_customer_id').eq('school_id', actor.schoolId).maybeSingle();
+    if (!b?.stripe_customer_id) return fail('まだ契約していません');
+    const p = await createPortal(key, { customer: b.stripe_customer_id, returnUrl: `${env.siteUrl()}/admin` });
+    return ok(undefined, { url: p.url });
   });
 }

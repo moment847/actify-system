@@ -833,7 +833,7 @@ insert into public.exam_subject_scores (result_id, school_id, subject, score, ma
   ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '数学', 118, 200, 53.4, 1),
   ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 142, 200, 57.2, 2),
   ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 67, 100, 56.8, 3);
-insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'past', '早稲田大学 商学部（地歴・公民型）', '', '2026-09-20', 2025, 118, 200, 130, null, '', null, '合格最低点は得点調整後の公表値（129.95点）');
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'past', '早稲田大学 商学部（地歴・公民型）', '', '2026-09-20', 2025, 118, 200, 129.95, null, '', null, '合格最低点は得点調整後の公表値');
 insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
   ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 49, 80, null, 0),
   ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 37, 60, null, 1),

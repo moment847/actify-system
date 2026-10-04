@@ -67,7 +67,12 @@ export async function fillBuffer(id: string): Promise<Result> {
 export async function bookMeeting(input: { date: string; time: string; studentId?: string }): Promise<Result<{ id: string }>> {
   return withActor(['student', 'coach', 'admin'], async ({ sb, actor }) => {
     const v = z.object({ date: zDate, time: zTime, studentId: zId.optional() }).parse(input);
-    const { data, error } = await sb.rpc('book_meeting', { p_on_date: v.date, p_start: v.time, p_student: actor.role === 'student' ? null : v.studentId ?? null, p_coach: null });
+    const sid = actor.role === 'student' ? actor.id : v.studentId;
+    // 講師が予約するなら自分、それ以外は主担当の講師（副担当の講師の枠には入れない）
+    const coach = actor.role === 'coach' ? actor.id : sid
+      ? (await sb.from('coach_assignments').select('coach_id').eq('student_id', sid).order('is_main', { ascending: false }).order('created_at').limit(1).maybeSingle()).data?.coach_id ?? null
+      : null;
+    const { data, error } = await sb.rpc('book_meeting', { p_on_date: v.date, p_start: v.time, p_student: actor.role === 'student' ? null : v.studentId ?? null, p_coach: coach });
     if (error) return fail(dbError(error));
     done();
     const { data: m } = await sb.from('meetings').select('length_min').eq('id', data as string).maybeSingle();
@@ -146,7 +151,7 @@ export async function sendChat(input: { text: string; imagePath?: string }): Pro
         loadWorld(sb, actor, [actor.id]),
         loadStudents(sb, actor).then(x => x[0]),
       ]);
-      const { data: ca } = await sb.from('coach_assignments').select('coach_id').eq('student_id', actor.id).order('created_at').limit(1).maybeSingle();
+      const { data: ca } = await sb.from('coach_assignments').select('coach_id').eq('student_id', actor.id).order('is_main', { ascending: false }).order('created_at').limit(1).maybeSingle();
       const coachName = ca ? (await sb.from('profiles').select('display_name').eq('id', ca.coach_id).maybeSingle()).data?.display_name : undefined;
 
       const admin = createAdminClient();

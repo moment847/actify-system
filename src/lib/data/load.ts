@@ -46,16 +46,17 @@ async function all<T>(make: (from: number, to: number) => PromiseLike<{ data: T[
 
 /**
  * 生徒たちの計算に要るものを読む（RLS が効くので、見えない行は入らない）。
- * - 生徒本人：自分の分だけ。小テストの版は見えない（予定に付いた版の満点は予定の行にある）。面談は担当講師の埋まっている時間も読む
+ * - 生徒本人：自分の分だけ。小テストの版は見えない（予定に付いた版の満点は予定の行にある）。面談は主担当の講師の埋まっている時間も読む
+ * - 教材は塾で絞る（service_role で読む定期処理でも、ほかの塾の教材を読まない）
  * - 講師・運営：渡した生徒の分。小テストの版と、面談の枠・予約も読む
  */
 export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: string[]): Promise<World> {
   if (!studentIds.length) return rowsToWorld(emptyRows(), actor.today, actor.timeZone);
   const staff = actor.role !== 'student';
   const [materials, units, quizVersions, tasks, slots, books, reviewSkips] = await Promise.all([
-    all<Rows['materials'][number]>((a, b) => sb.from('materials').select('id, name, short_name, subject, kind, review_intervals, keywords, archived_at').order('created_at').range(a, b)),
-    all<Rows['units'][number]>((a, b) => sb.from('material_units').select('id, material_id, seq, label').order('material_id').order('seq').range(a, b)),
-    staff ? all<Rows['quizVersions'][number]>((a, b) => sb.from('quiz_versions').select('id, unit_id, version, max_score').order('unit_id').order('version').range(a, b)) : Promise.resolve([]),
+    all<Rows['materials'][number]>((a, b) => sb.from('materials').select('id, name, short_name, subject, kind, review_intervals, keywords, archived_at').eq('school_id', actor.schoolId).order('created_at').range(a, b)),
+    all<Rows['units'][number]>((a, b) => sb.from('material_units').select('id, material_id, seq, label').eq('school_id', actor.schoolId).order('material_id').order('seq').range(a, b)),
+    staff ? all<Rows['quizVersions'][number]>((a, b) => sb.from('quiz_versions').select('id, unit_id, version, max_score').eq('school_id', actor.schoolId).order('unit_id').order('version').range(a, b)) : Promise.resolve([]),
     all<Rows['tasks'][number]>((a, b) => sb.from('tasks')
       .select('id, student_id, on_date, start_time, duration_min, material_id, unit_id, vague, title, status, quiz_version_id, max_score, no_quiz, is_retest, score, actual_min, started_at, paused_at, paused_ms, created_at')
       .in('student_id', studentIds).order('on_date').order('start_time').order('id').range(a, b)),
@@ -71,10 +72,10 @@ export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: st
     Promise.all(chunks(slots.map(s => s.id)).map(c => all<Rows['slotSkips'][number]>((a, b) => sb.from('study_slot_skips').select('slot_id, on_date').in('slot_id', c).range(a, b)))).then(x => x.flat()),
   ]);
 
-  // 面談：講師なら自分の予約・枠。生徒なら担当講師の枠と、埋まっている時間（ほかの生徒の名前は出ない）
+  // 面談：講師なら自分の予約・枠。生徒なら主担当の講師の枠と、埋まっている時間（ほかの生徒の名前は出ない）
   let meetings: Rows['meetings'] = [], coachOpen: Rows['coachOpen'] = [], meetingLength = 30;
   const coachId = actor.role === 'coach' ? actor.id
-    : (await sb.from('coach_assignments').select('coach_id, created_at').eq('student_id', studentIds[0]).order('created_at').limit(1)).data?.[0]?.coach_id;
+    : (await sb.from('coach_assignments').select('coach_id').eq('student_id', studentIds[0]).order('is_main', { ascending: false }).order('created_at').limit(1)).data?.[0]?.coach_id;
   if (coachId) {
     const [open, setting] = await Promise.all([
       all<Rows['coachOpen'][number]>((a, b) => sb.from('coach_open_slots').select('id, on_date, weekday, start_time, end_time').eq('coach_id', coachId).range(a, b)),

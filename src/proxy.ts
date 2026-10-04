@@ -3,7 +3,8 @@ import { updateSession } from '@/lib/supabase/proxy';
 
 // Next.js 16 の Proxy（旧 middleware）。セッションを更新し、ログインしていなければログイン画面へ送る。
 // ここでの判定は「入口の振り分け」だけ。権限は各サーバ処理と RLS で毎回確かめる
-const PUBLIC_PATHS = ['/login', '/auth', '/api/health'];
+// Webhook（LINE・Stripe）と定期処理は、それぞれ署名・合言葉で守る。Service Worker と manifest はログイン前にも読む
+const PUBLIC_PATHS = ['/login', '/auth', '/api/health', '/api/line/webhook', '/api/stripe/webhook', '/api/cron', '/sw.js', '/manifest.webmanifest'];
 
 export async function proxy(request: NextRequest) {
   const { response, userId } = await updateSession(request);
