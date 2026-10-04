@@ -1,6 +1,9 @@
 import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { z } from 'zod';
+
+// 入力の形のエラーは日本語で画面に出す
+z.config(z.locales.ja());
 import { createClient } from '@/lib/supabase/server';
 import { loadActor, type Actor, type Role } from '@/lib/data/load';
 
@@ -8,6 +11,9 @@ import { loadActor, type Actor, type Role } from '@/lib/data/load';
 export type Result<T = undefined> = { ok: true; message?: string; data?: T } | { ok: false; error: string };
 
 export const ok = <T,>(message?: string, data?: T): Result<T> => ({ ok: true, message, data });
+/** update / delete の結果。RLS で見えない行は 0 行で黙って通るので、行数で「見つからない」を返す */
+export const changed = (r: { error: { message?: string; code?: string } | null; count: number | null }, notFound = '見つかりません'): string | null =>
+  r.error ? dbError(r.error) : (r.count ?? 0) === 0 ? notFound : null;
 export const fail = (error: string): Result<never> => ({ ok: false, error });
 
 // 入力の形（画面から何が来ても、ここで弾く）

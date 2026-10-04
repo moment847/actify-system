@@ -49,7 +49,7 @@ export async function botReply(args: {
 
   try {
     const res = await client.beta.messages.create({
-      model, max_tokens: 1500,   // 考える分も含む。返事は8行までと指示し、保存の前に文字数でも切る
+      model, max_tokens: 4000,   // 考える分も含む上限（文字数ではない）。返事は8行までと指示し、保存の前に clipReply で文字数を切る
       system: [{ type: 'text', text: ACTIFY_CHAT_SYSTEM, cache_control: { type: 'ephemeral' } }],
       messages,
       output_config: { effort: 'low' },   // 雑談と相談：深く考えるより早く返す

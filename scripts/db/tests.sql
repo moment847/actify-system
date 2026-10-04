@@ -546,6 +546,8 @@ begin
   end;
 end $$;
 reset role;
+-- service_role には JWT の sub が無い（auth.uid() は null）
+set request.jwt.claim.sub = '';
 set role service_role;
 do $$
 declare a bigint; s uuid := current_setting('test.school_a')::uuid; u uuid := current_setting('test.hina')::uuid;
@@ -573,6 +575,116 @@ begin
   end;
   update public.schools set ai_daily_limit_per_user = 30, ai_monthly_budget_jpy = 5000 where id = s;
   raise notice 'T28 OK: AI limits';
+end $$;
+reset role;
+
+-- ---------- 自分で洗い直した分（2026-10-04） ----------
+-- T29：塾の運営は AI の上限を変えられない（service_role だけ）
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+do $$
+begin
+  begin
+    update public.schools set ai_monthly_budget_jpy = 999999999 where id = current_setting('test.school_a')::uuid;
+    raise exception 'T29 FAILED: school admin raised AI budget';
+  exception when insufficient_privilege then null;
+  end;
+  update public.schools set name = 'Actify デモ塾' where id = current_setting('test.school_a')::uuid;
+  raise notice 'T29 OK: AI limits locked for school admins';
+end $$;
+
+-- T30：タイムゾーンの名前は確かめる（変な値で全部の操作が落ちないように）
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  begin
+    update public.profiles set timezone = 'Mars/Olympus' where id = auth.uid();
+    raise exception 'T30 FAILED: bad timezone accepted';
+  exception when invalid_parameter_value then null;
+  end;
+  update public.profiles set timezone = 'America/Los_Angeles' where id = auth.uid();
+  if private.local_today(auth.uid()) is null then raise exception 'T30 FAILED: local_today'; end if;
+  update public.profiles set timezone = null where id = auth.uid();
+  raise notice 'T30 OK: timezone validated';
+end $$;
+
+-- T31：終わった予定（記録）は動かせない・消せない。点数は直せる。未完了に戻せば動かせる
+set request.jwt.claim.sub = :'coach';
+do $$
+declare t uuid; n int;
+begin
+  select id into t from public.tasks where student_id = current_setting('test.hina')::uuid and status = 'done' and quiz_version_id is not null limit 1;
+  begin
+    update public.tasks set start_time = '05:00' where id = t;
+    raise exception 'T31 FAILED: moved a done task';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.tasks set duration_min = duration_min + 5 where id = t;
+    raise exception 'T31 FAILED: resized a done task';
+  exception when check_violation then null;
+  end;
+  update public.tasks set score = 1 where id = t;
+  update public.tasks set score = 10 where id = t;
+  raise notice 'T31 OK: done tasks are records';
+end $$;
+
+-- T32：版の番号は DB が付ける（同じ範囲に2件入れると 次の番号・その次）。アプリは番号を送らない
+do $$
+declare u uuid; a int; b int; base int;
+begin
+  select x.id into u from public.material_units x where x.label = 'テスト用' limit 1;
+  select coalesce(max(version), 0) into base from public.quiz_versions where unit_id = u;
+  insert into public.quiz_versions (unit_id, max_score, problem_path, answer_path)
+    values (u, 20, current_setting('test.school_a') || '/quiz/p1.pdf', current_setting('test.school_a') || '/quiz/a1.pdf') returning version into a;
+  insert into public.quiz_versions (unit_id, max_score, problem_path, answer_path)
+    values (u, 20, current_setting('test.school_a') || '/quiz/p2.pdf', current_setting('test.school_a') || '/quiz/a2.pdf') returning version into b;
+  if a <> base + 1 or b <> base + 2 then raise exception 'T32 FAILED: versions % %', a, b; end if;
+  if (select created_by from public.quiz_versions where unit_id = u and version = b) <> auth.uid() then raise exception 'T32 FAILED: created_by not stamped'; end if;
+  raise notice 'T32 OK: versions numbered by DB';
+end $$;
+
+-- T33：3つ以上の入れ替え（土・金・火 の順に次の範囲を入れると、火 < 金 < 土 の順に若い番号になる）
+do $$
+declare
+  en uuid; nxt int; sat date; fri date; tue date; a uuid; b uuid; c uuid; sa int; sb int; sc int;
+begin
+  select m.id into en from public.materials m where m.short_name = 'ターゲット1900' and m.school_id = current_setting('test.school_a')::uuid;
+  select min(u.seq) into nxt from public.material_units u where u.material_id = en and u.label <> 'テスト用'
+    and not exists (select 1 from public.tasks t where t.student_id = current_setting('test.hina')::uuid and t.unit_id = u.id);
+  sat := private.local_today(current_setting('test.hina')::uuid) + 21; sat := sat - (extract(isodow from sat)::int - 1) + 5;
+  fri := sat - 1; tue := sat - 4;
+  insert into public.tasks (student_id, on_date, start_time, duration_min, material_id, unit_id)
+    select current_setting('test.hina')::uuid, sat, '09:00', 30, en, u.id from public.material_units u where u.material_id = en and u.seq = nxt returning id into a;
+  insert into public.tasks (student_id, on_date, start_time, duration_min, material_id, unit_id)
+    select current_setting('test.hina')::uuid, fri, '20:00', 30, en, u.id from public.material_units u where u.material_id = en and u.seq = nxt + 1 returning id into b;
+  insert into public.tasks (student_id, on_date, start_time, duration_min, material_id, unit_id)
+    select current_setting('test.hina')::uuid, tue, '06:00', 30, en, u.id from public.material_units u where u.material_id = en and u.seq = nxt + 2 returning id into c;
+  select u.seq into sa from public.tasks t join public.material_units u on u.id = t.unit_id where t.id = a;
+  select u.seq into sb from public.tasks t join public.material_units u on u.id = t.unit_id where t.id = b;
+  select u.seq into sc from public.tasks t join public.material_units u on u.id = t.unit_id where t.id = c;
+  if not (sc = nxt and sb = nxt + 1 and sa = nxt + 2) then raise exception 'T33 FAILED: tue=% fri=% sat=%', sc, sb, sa; end if;
+  if (select created_by from public.tasks where id = c) <> auth.uid() then raise exception 'T33 FAILED: created_by'; end if;
+  delete from public.tasks where id in (a, b, c);
+  raise notice 'T33 OK: three-way reorder';
+end $$;
+
+-- T34：返信の講師はログインしている人になる（送った値は無視）。見えない行の update / delete は 0 行
+do $$
+declare t uuid; n int;
+begin
+  select id into t from public.tasks where student_id = current_setting('test.hina')::uuid and status = 'done' limit 1;
+  insert into public.task_replies (task_id, coach_id, body) values (t, 'a0000000-0000-4000-8000-0000000000c2', 'なりすまし')
+    on conflict (task_id) do update set coach_id = excluded.coach_id, body = excluded.body;
+  if (select coach_id from public.task_replies where task_id = t) <> auth.uid() then raise exception 'T34 FAILED: coach_id spoofed'; end if;
+  update public.tasks set duration_min = 30 where id = current_setting('test.yuma_task')::uuid and false;
+  update public.materials set name = 'x' where school_id = 'bbbbbbbb-0000-4000-8000-000000000000';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'T34 FAILED: updated another school materials'; end if;
+  delete from public.tasks where school_id = 'bbbbbbbb-0000-4000-8000-000000000000';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'T34 FAILED: deleted another school tasks'; end if;
+  raise notice 'T34 OK: stamps and cross-school writes';
 end $$;
 reset role;
 

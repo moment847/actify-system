@@ -6,7 +6,7 @@ import { dow, mdw, range, WD } from '@/lib/domain/dates';
 import { availCopyFromLastWeek } from '@/lib/domain/plan';
 import { mergeSlot } from '@/lib/domain/slots';
 import { loadWorld } from '@/lib/data/load';
-import { dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
+import { changed, dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
 
 const Who = z.object({ studentId: zId.optional() });
 const target = (actorId: string, role: string, studentId?: string) => (role === 'student' ? actorId : studentId);
@@ -38,8 +38,8 @@ export async function updateStudySlot(input: { id: string; start: string; end: s
     const patch: Record<string, unknown> = { start_time: v.start, end_time: v.end, label: v.label ?? '' };
     if (cur.weekday !== null && !v.repeat) Object.assign(patch, { weekday: null, on_date: v.date });
     else if (cur.weekday === null && v.repeat) Object.assign(patch, { weekday: dow(cur.on_date), on_date: null });
-    const { error } = await sb.from('study_slots').update(patch).eq('id', v.id);
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('study_slots').update(patch, { count: 'exact' }).eq('id', v.id), '枠が見つかりません');
+    if (bad) return fail(bad);
     revalidatePath('/', 'layout');
     return ok(v.repeat && cur.weekday === null ? `毎週${WD[dow(cur.on_date)]}曜 ${range(v.start, v.end)} にしました` : '保存しました');
   });

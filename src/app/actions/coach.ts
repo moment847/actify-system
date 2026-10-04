@@ -14,7 +14,7 @@ import { mergeSlot } from '@/lib/domain/slots';
 import { pathIn } from '@/lib/domain/paths';
 import { VAGUE, type Task, type World } from '@/lib/domain/types';
 import { loadStudents, loadWorld, type Actor } from '@/lib/data/load';
-import { dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
+import { changed, dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
 
 const STAFF = ['coach', 'admin'] as const;
 const done = () => revalidatePath('/', 'layout');
@@ -92,6 +92,7 @@ export async function updateTask(input: z.input<typeof UpdateTask>): Promise<Res
     const v = UpdateTask.parse(input);
     const { data: cur } = await sb.from('tasks').select('student_id, status').eq('id', v.id).maybeSingle();
     if (!cur) return fail('予定が見つかりません');
+    if (cur.status === 'done') return fail('終わった予定は動かせません。直すなら、いちど未完了に戻してください');
     const w = await worldFor(sb, actor, cur.student_id);
     const t = w.tasks.find(x => x.id === v.id)!;
     const patch: Record<string, unknown> = { on_date: v.date, start_time: v.time, duration_min: v.duration };
@@ -106,8 +107,8 @@ export async function updateTask(input: z.input<typeof UpdateTask>): Promise<Res
     if (t.vague) { if (v.title) patch.title = v.title; if (v.vague) patch.vague = v.vague; }
     t.date = v.date; t.time = v.time; t.duration = v.duration;
     const note = cur.status === 'todo' ? seqNote(w, t.studentId) : '';
-    const { error } = await sb.from('tasks').update(patch).eq('id', v.id);
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('tasks').update(patch, { count: 'exact' }).eq('id', v.id), '予定が見つかりません');
+    if (bad) return fail(bad);
     done();
     return ok(`保存しました${note}`);
   });
@@ -117,12 +118,13 @@ export async function updateTask(input: z.input<typeof UpdateTask>): Promise<Res
 export async function deleteTask(input: { id: string; repack?: boolean }): Promise<Result> {
   return withActor([...STAFF], async ({ sb, actor }) => {
     const v = z.object({ id: zId, repack: z.boolean().optional() }).parse(input);
-    const { data: cur } = await sb.from('tasks').select('student_id, on_date, start_time, title, unit_id').eq('id', v.id).maybeSingle();
+    const { data: cur } = await sb.from('tasks').select('student_id, status, on_date, start_time, title, unit_id').eq('id', v.id).maybeSingle();
     if (!cur) return fail('予定が見つかりません');
+    if (cur.status === 'done') return fail('終わった予定（記録）は消せません。直すなら「未完了に戻す」から');
     const w = await worldFor(sb, actor, cur.student_id);
     const label = cur.title || `${mat(w, w.tasks.find(t => t.id === v.id)?.materialId)?.short ?? ''} ${unitOf(w, cur.unit_id)?.unit.label ?? ''}`.trim();
-    const { error } = await sb.from('tasks').delete().eq('id', v.id);
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('tasks').delete({ count: 'exact' }).eq('id', v.id), '予定が見つかりません');
+    if (bad) return fail(bad);
     if (v.repack) {
       w.tasks = w.tasks.filter(t => t.id !== v.id);
       const b = blockAt(w, cur.student_id, cur.on_date, toMin(cur.start_time.slice(0, 5)));
@@ -137,13 +139,14 @@ export async function deleteTask(input: { id: string; repack?: boolean }): Promi
 export async function adjustTaskDuration(input: { id: string; delta: number }): Promise<Result> {
   return withActor([...STAFF], async ({ sb, actor }) => {
     const v = z.object({ id: zId, delta: z.number().int().min(-120).max(120) }).parse(input);
-    const { data: cur } = await sb.from('tasks').select('student_id, on_date, start_time, duration_min').eq('id', v.id).maybeSingle();
+    const { data: cur } = await sb.from('tasks').select('student_id, status, on_date, start_time, duration_min').eq('id', v.id).maybeSingle();
     if (!cur) return fail('予定が見つかりません');
+    if (cur.status === 'done') return fail('終わった予定は動かせません');
     const w = await worldFor(sb, actor, cur.student_id);
     const t = w.tasks.find(x => x.id === v.id)!;
     t.duration = Math.max(10, t.duration + v.delta);
-    const { error } = await sb.from('tasks').update({ duration_min: t.duration }).eq('id', v.id);
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('tasks').update({ duration_min: t.duration }, { count: 'exact' }).eq('id', v.id), '予定が見つかりません');
+    if (bad) return fail(bad);
     const b = blockAt(w, cur.student_id, cur.on_date, toMin(cur.start_time.slice(0, 5)));
     if (b) for (const m of repack(w, cur.student_id, b)) await sb.from('tasks').update({ start_time: m.time }).eq('id', m.id);
     done();
@@ -242,9 +245,9 @@ export async function skipReview(input: { studentId: string; unitId: string; att
 
 // ---------- コメントと目標 ----------
 export async function replyToFeedback(input: { taskId: string; body: string }): Promise<Result> {
-  return withActor([...STAFF], async ({ sb, actor }) => {
+  return withActor([...STAFF], async ({ sb }) => {
     const v = z.object({ taskId: zId, body: z.string().trim().min(1, '返信を書いてください').max(400) }).parse(input);
-    const { error } = await sb.from('task_replies').upsert({ task_id: v.taskId, coach_id: actor.id, body: v.body });
+    const { error } = await sb.from('task_replies').upsert({ task_id: v.taskId, body: v.body });
     if (error) return fail(dbError(error));
     done();
     return ok('返信しました（生徒の「記録」に出ます）');
@@ -256,10 +259,11 @@ export async function saveStudentNotes(input: { studentId: string; message: stri
   return withActor([...STAFF], async ({ sb }) => {
     const v = z.object({ studentId: zId, message: z.string().max(400), memo: z.string().max(2000) }).parse(input);
     const [a, b] = await Promise.all([
-      sb.from('students').update({ coach_message: v.message }).eq('id', v.studentId),
+      sb.from('students').update({ coach_message: v.message }, { count: 'exact' }).eq('id', v.studentId),
       sb.from('coach_notes').upsert({ student_id: v.studentId, memo: v.memo }),
     ]);
-    if (a.error || b.error) return fail(dbError(a.error || b.error));
+    const bad = changed(a, '生徒が見つかりません') ?? (b.error ? dbError(b.error) : null);
+    if (bad) return fail(bad);
     done();
     return ok('保存しました');
   });
@@ -270,8 +274,8 @@ export async function setBook(input: { studentId: string; materialId: string; ta
   return withActor([...STAFF], async ({ sb, actor }) => {
     const v = z.object({ studentId: zId, materialId: zId, target: zDate.optional(), remove: z.boolean().optional() }).parse(input);
     if (v.remove) {
-      const { error } = await sb.from('student_books').delete().eq('student_id', v.studentId).eq('material_id', v.materialId);
-      if (error) return fail(dbError(error));
+      const bad = changed(await sb.from('student_books').delete({ count: 'exact' }).eq('student_id', v.studentId).eq('material_id', v.materialId), '参考書が見つかりません');
+      if (bad) return fail(bad);
       done(); return ok('参考書を外しました');
     }
     const { data: cur } = await sb.from('student_books').select('start_on').eq('student_id', v.studentId).eq('material_id', v.materialId).maybeSingle();
@@ -302,16 +306,16 @@ export async function updateCoachOpenSlot(input: { id: string; start: string; en
   return withActor([...STAFF], async ({ sb }) => {
     const v = z.object({ id: zId, start: zTime, end: zTime }).parse(input);
     if (v.start >= v.end) return fail('終わりの時刻を始まりより後にしてください');
-    const { error } = await sb.from('coach_open_slots').update({ start_time: v.start, end_time: v.end }).eq('id', v.id);
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('coach_open_slots').update({ start_time: v.start, end_time: v.end }, { count: 'exact' }).eq('id', v.id), '枠が見つかりません');
+    if (bad) return fail(bad);
     done(); return ok('保存しました');
   });
 }
 
 export async function deleteCoachOpenSlot(id: string): Promise<Result> {
   return withActor([...STAFF], async ({ sb }) => {
-    const { error } = await sb.from('coach_open_slots').delete().eq('id', zId.parse(id));
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('coach_open_slots').delete({ count: 'exact' }).eq('id', zId.parse(id)), '枠が見つかりません');
+    if (bad) return fail(bad);
     done(); return ok('面談できる時間から外しました（入っている予約はそのまま）');
   });
 }
@@ -414,12 +418,9 @@ export async function registerQuizVersions(input: { rows: { unitId: string; max:
     const v = z.object({ rows: z.array(z.object({ unitId: zId, max: z.number().int().min(1).max(1000), problemPath: z.string().max(300), answerPath: z.string().max(300).nullish(), fileName: z.string().max(200) })).min(1).max(300) }).parse(input);
     if (v.rows.some(r => !pathIn(r.problemPath, actor.schoolId + '/') || (r.answerPath && !pathIn(r.answerPath, actor.schoolId + '/')))) return fail('ファイルの場所が正しくありません');
     const units = [...new Set(v.rows.map(r => r.unitId))];
-    const { data: qv } = await sb.from('quiz_versions').select('unit_id, version').in('unit_id', units);
     const { count: before } = await sb.from('tasks').select('id', { count: 'exact', head: true }).eq('status', 'todo').is('quiz_version_id', null).in('unit_id', units);
-    const last: Record<string, number> = {};
-    for (const q of qv ?? []) last[q.unit_id] = Math.max(last[q.unit_id] ?? 0, q.version);
-    const rows = v.rows.map(r => { last[r.unitId] = (last[r.unitId] ?? 0) + 1;
-      return { unit_id: r.unitId, version: last[r.unitId], max_score: r.max, problem_path: r.problemPath, answer_path: r.answerPath || r.problemPath, file_name: r.fileName, created_by: actor.id }; });
+    // 版の番号は DB が付ける（同時に登録しても重ならない）
+    const rows = v.rows.map(r => ({ unit_id: r.unitId, max_score: r.max, problem_path: r.problemPath, answer_path: r.answerPath || r.problemPath, file_name: r.fileName }));
     const { error } = await sb.from('quiz_versions').insert(rows);
     if (error) return fail(dbError(error));
     const { count: after } = await sb.from('tasks').select('id', { count: 'exact', head: true }).eq('status', 'todo').is('quiz_version_id', null).in('unit_id', units);
@@ -443,8 +444,8 @@ export async function registerResource(input: { name: string; path: string; targ
 
 export async function deleteResource(id: string): Promise<Result> {
   return withActor([...STAFF], async ({ sb }) => {
-    const { error } = await sb.from('resources').delete().eq('id', zId.parse(id));
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('resources').delete({ count: 'exact' }).eq('id', zId.parse(id)), '資料が見つかりません');
+    if (bad) return fail(bad);
     done(); return ok('取り下げました');
   });
 }

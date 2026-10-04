@@ -8,7 +8,7 @@ import { env } from '@/lib/env';
 import { reserveAi, settleAi, type AiBlock } from '@/server/ai-budget';
 import { parsePastedBooks } from '@/lib/domain/materials';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { dbError, fail, ok, withActor, zId, type Result } from '@/server/result';
+import { changed, dbError, fail, ok, withActor, zId, type Result } from '@/server/result';
 
 const done = () => revalidatePath('/', 'layout');
 const zSubject = z.enum(['english', 'math', 'japanese', 'science', 'social', 'other']);
@@ -91,8 +91,8 @@ export async function updateMaterial(input: { id: string; name: string; short: s
     const v = z.object({ id: zId, name: z.string().trim().min(1).max(100), short: z.string().trim().min(1).max(30), subject: zSubject, kind: zKind,
       intervals: z.array(z.number().int().min(1).max(365)).max(10), keywords: z.array(z.string().trim().min(2).max(40)).max(20).optional() }).parse(input);
     const intervals = v.kind === 'input' ? (v.intervals.length ? v.intervals : [1, 7, 30]) : [];
-    const { error } = await sb.from('materials').update({ name: v.name, short_name: v.short, subject: v.subject, kind: v.kind, review_intervals: intervals, ...(v.keywords ? { keywords: v.keywords } : {}) }).eq('id', v.id);
-    if (error) return fail(dbError(error));
+    const bad = changed(await sb.from('materials').update({ name: v.name, short_name: v.short, subject: v.subject, kind: v.kind, review_intervals: intervals, ...(v.keywords ? { keywords: v.keywords } : {}) }, { count: 'exact' }).eq('id', v.id), '教材が見つかりません');
+    if (bad) return fail(bad);
     done(); return ok('保存しました');
   });
 }
@@ -107,6 +107,7 @@ export async function updateMaterialUnits(input: { id: string; lines: string[] }
     const { data: units, error: e1 } = await sb.from('material_units').select('id, seq, label').eq('material_id', v.id).order('seq');
     if (e1) return fail(dbError(e1));
     const cur = units ?? [];
+    if (!cur.length) return fail('教材が見つかりません');
     const removed = cur.slice(v.lines.length);
     if (removed.length) {
       const ids = removed.map(u => u.id);
@@ -133,8 +134,9 @@ export async function updateMaterialUnits(input: { id: string; lines: string[] }
 
 export async function deleteMaterial(id: string): Promise<Result> {
   return withActor(['admin'], async ({ sb }) => {
-    const { error } = await sb.from('materials').delete().eq('id', zId.parse(id));
-    if (error) return fail(error.code === '23503' ? '予定・小テスト・担当の参考書で使っている教材は消せません' : dbError(error));
+    const r = await sb.from('materials').delete({ count: 'exact' }).eq('id', zId.parse(id));
+    if (r.error) return fail(r.error.code === '23503' ? '予定・小テスト・担当の参考書で使っている教材は消せません' : dbError(r.error));
+    if (!r.count) return fail('教材が見つかりません');
     done(); return ok('削除しました');
   });
 }
@@ -181,8 +183,8 @@ export async function updateAccount(input: { id: string; role?: 'student' | 'coa
     if (v.role) patch.role = v.role;
     if (v.status) patch.status = v.status;
     if (v.name) patch.display_name = v.name;
-    if (Object.keys(patch).length) { const { error } = await sb.from('profiles').update(patch).eq('id', v.id); if (error) return fail(dbError(error)); }
-    if (v.grade !== undefined) { const { error } = await sb.from('students').update({ grade: v.grade }).eq('id', v.id); if (error) return fail(dbError(error)); }
+    if (Object.keys(patch).length) { const bad = changed(await sb.from('profiles').update(patch, { count: 'exact' }).eq('id', v.id), 'アカウントが見つかりません'); if (bad) return fail(bad); }
+    if (v.grade !== undefined) { const bad = changed(await sb.from('students').update({ grade: v.grade }, { count: 'exact' }).eq('id', v.id), '生徒が見つかりません'); if (bad) return fail(bad); }
     done();
     return ok(v.status === 'withdrawn' ? '退会にしました（講師の担当一覧から外れます）' : '保存しました');
   });
@@ -194,21 +196,22 @@ export async function assignCoach(input: { coachId: string; studentId: string; a
     const v = z.object({ coachId: zId, studentId: zId, assign: z.boolean() }).parse(input);
     const q = v.assign
       ? sb.from('coach_assignments').insert({ coach_id: v.coachId, student_id: v.studentId })
-      : sb.from('coach_assignments').delete().eq('coach_id', v.coachId).eq('student_id', v.studentId);
-    const { error } = await q;
-    if (error) return fail(dbError(error));
+      : sb.from('coach_assignments').delete({ count: 'exact' }).eq('coach_id', v.coachId).eq('student_id', v.studentId);
+    const r = await q;
+    if (r.error) return fail(dbError(r.error));
+    if (!v.assign && !r.count) return fail('担当ではありません');
     done(); return ok(v.assign ? '担当にしました' : '担当から外しました');
   });
 }
 
 /** AI の原価（円）。この塾の月ごと・用途ごと */
 export async function aiCostSummary(): Promise<Result<{ month: string; purpose: string; calls: number; costJpy: number; errors: number }[]>> {
-  return withActor(['admin'], async ({ sb }) => {
+  return withActor(['admin'], async ({ sb, actor }) => {
     const { data, error } = await sb.from('ai_calls').select('purpose, cost_jpy, error, created_at').order('created_at', { ascending: false }).limit(5000);
     if (error) return fail(dbError(error));
     const m = new Map<string, { month: string; purpose: string; calls: number; costJpy: number; errors: number }>();
     for (const r of data ?? []) {
-      const month = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit' }).format(new Date(r.created_at));
+      const month = new Intl.DateTimeFormat('en-CA', { timeZone: actor.timeZone, year: 'numeric', month: '2-digit' }).format(new Date(r.created_at));
       const k = month + r.purpose, x = m.get(k) ?? { month, purpose: r.purpose, calls: 0, costJpy: 0, errors: 0 };
       x.calls++; x.costJpy += r.cost_jpy; if (r.error) x.errors++; m.set(k, x);
     }
