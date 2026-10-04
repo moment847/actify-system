@@ -1,0 +1,28 @@
+{
+  "_note": "2026-10-05 に足したデモ（保護者・模試と過去問・副担当・契約）。日付はモックの「今日」2026-10-02 を基準にした値で、build-seed.mjs が --today に合わせてずらす。生徒の点数・偏差値は作った値。過去問の合格最低点は公表値（早稲田大学 商学部 地歴・公民型 2025年度 129.95点／200点。代々木ゼミナール・旺文社パスナビの掲載値）",
+  "lineBasicId": "@actify-demo",
+  "subCoaches": [
+    { "id": "c2", "name": "中村 葵", "email": "nakamura@demo.actify.jp", "students": ["s1", "s4"] }
+  ],
+  "guardians": [
+    { "id": "g1", "student": "s1", "name": "山田 恵子", "relation": "母", "linked": true, "lineUser": "Udemo0000000000000000000000000001" },
+    { "id": "g2", "student": "s2", "name": "小林 浩二", "relation": "父", "linked": true, "lineUser": "Udemo0000000000000000000000000002" },
+    { "id": "g3", "student": "s3", "name": "佐藤 由美", "relation": "母", "linked": false },
+    { "id": "g4", "student": "s4", "name": "高橋 真理", "relation": "母", "linked": true, "lineUser": "Udemo0000000000000000000000000004", "weeklyReport": false }
+  ],
+  "exams": [
+    { "id": "x1", "student": "s1", "kind": "mock", "title": "第1回 全統共通テスト模試", "provider": "河合塾", "date": "2026-05-17", "score": 450, "max": 700, "dev": 54.8, "target": "早稲田大学 商学部", "judge": "D",
+      "subjects": [["英語", 141, 200, 56.2], ["数学", 112, 200, 52.1], ["国語", 136, 200, 55.0], ["世界史", 61, 100, 53.9]] },
+    { "id": "x2", "student": "s1", "kind": "mock", "title": "第2回 全統記述模試", "provider": "河合塾", "date": "2026-08-23", "score": 371, "max": 600, "dev": 57.3, "target": "早稲田大学 商学部", "judge": "C",
+      "subjects": [["英語", 132, 200, 60.4], ["国語", 118, 200, 56.9], ["世界史", 121, 200, 54.1]] },
+    { "id": "x3", "student": "s1", "kind": "mock", "title": "第2回 全統共通テスト模試", "provider": "河合塾", "date": "2026-08-30", "score": 485, "max": 700, "dev": 58.1, "target": "早稲田大学 商学部", "judge": "C",
+      "subjects": [["英語", 158, 200, 61.0], ["数学", 118, 200, 53.4], ["国語", 142, 200, 57.2], ["世界史", 67, 100, 56.8]] },
+    { "id": "x4", "student": "s1", "kind": "past", "title": "早稲田大学 商学部（地歴・公民型）", "date": "2026-09-20", "year": 2025, "score": 118, "max": 200, "passing": 130,
+      "note": "合格最低点は得点調整後の公表値（129.95点）", "subjects": [["英語", 49, 80], ["国語", 37, 60], ["世界史", 32, 60]] },
+    { "id": "x5", "student": "s1", "kind": "past", "title": "早稲田大学 商学部（地歴・公民型）", "date": "2026-09-27", "year": 2024, "score": 124, "max": 200, "passing": null,
+      "note": "合格最低点はまだ入れていません", "subjects": [["英語", 53, 80], ["国語", 38, 60], ["世界史", 33, 60]] },
+    { "id": "x6", "student": "s2", "kind": "mock", "title": "第2回 全統記述模試", "provider": "河合塾", "date": "2026-08-23", "score": 402, "max": 600, "dev": 61.5, "target": "慶應義塾大学 経済学部", "judge": "B",
+      "subjects": [["英語", 141, 200, 63.0], ["数学", 128, 200, 60.2], ["世界史", 133, 200, 59.8]] }
+  ],
+  "billing": { "status": "trialing", "seats": 4, "trialEnd": "2026-10-31" }
+}

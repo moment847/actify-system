@@ -804,4 +804,49 @@ insert into public.resources (school_id, name, file_path, target_student_id, cre
   ('f013ee69-3c02-45b0-a988-1ae377a443ed', '英語長文 読み方のポイント', 'f013ee69-3c02-45b0-a988-1ae377a443ed/demo/study-guide.pdf', null, '2026-10-01'::date);
 insert into public.chat_messages (school_id, student_id, sender, body, mood) values ('f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'bot', 'やあ、陽菜さん！受験AIのActifyくんだよ。
 今日の予定、参考書の進み具合、苦手なところ、なんでも聞いてね。', 'happy');
+update public.schools set line_basic_id = '@actify-demo' where id = 'f013ee69-3c02-45b0-a988-1ae377a443ed';
+insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, confirmation_token, recovery_token, email_change, email_change_token_new)
+  values ('00000000-0000-0000-0000-000000000000', 'd12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', 'authenticated', 'authenticated', 'nakamura@demo.actify.jp', extensions.crypt('actify-demo-2026', extensions.gen_salt('bf')), now(), '{"provider":"email","providers":["email"]}', '{}', '', '', '', '');
+insert into auth.identities (provider_id, user_id, identity_data, provider, last_sign_in_at)
+  values ('d12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', 'd12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', jsonb_build_object('sub', 'd12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', 'email', 'nakamura@demo.actify.jp', 'email_verified', true), 'email', now());
+insert into public.profiles (id, school_id, role, display_name, status) values ('d12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', 'f013ee69-3c02-45b0-a988-1ae377a443ed', 'coach', '中村 葵', 'active');
+insert into public.coach_assignments (coach_id, student_id, school_id) values ('d12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'f013ee69-3c02-45b0-a988-1ae377a443ed');
+insert into public.coach_assignments (coach_id, student_id, school_id) values ('d12d2f1e-54d1-4a03-a8d2-dcb5201b6e26', '2c7cf734-4a67-464c-a25d-4b0707c254d9', 'f013ee69-3c02-45b0-a988-1ae377a443ed');
+insert into public.guardians (id, school_id, student_id, name, relation, line_user_id, linked_at, weekly_report) values ('77df0f9d-2384-4717-a078-3b12e32428e4', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', '山田 恵子', '母', 'Udemo0000000000000000000000000001', ('2026-09-08'::date + time '20:00') at time zone 'Asia/Tokyo', true);
+insert into public.guardians (id, school_id, student_id, name, relation, line_user_id, linked_at, weekly_report) values ('69b02a3c-7cc1-4036-aee9-ab1fdef2d0fc', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '0f7f018a-db4c-4ce9-a7cb-d68e84ce6ced', '小林 浩二', '父', 'Udemo0000000000000000000000000002', ('2026-09-08'::date + time '20:00') at time zone 'Asia/Tokyo', true);
+insert into public.guardians (id, school_id, student_id, name, relation, line_user_id, linked_at, weekly_report) values ('4acc5dcb-6d2a-4370-ae5f-e3e44c950790', 'f013ee69-3c02-45b0-a988-1ae377a443ed', 'aac7a176-8776-40aa-a34c-716dac7a664d', '佐藤 由美', '母', null, null, true);
+insert into public.guardians (id, school_id, student_id, name, relation, line_user_id, linked_at, weekly_report) values ('ce68e0eb-8ccf-44e1-a84f-23471cd8a005', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '2c7cf734-4a67-464c-a25d-4b0707c254d9', '高橋 真理', '母', 'Udemo0000000000000000000000000004', ('2026-09-08'::date + time '20:00') at time zone 'Asia/Tokyo', false);
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('34a27cd4-0e62-4a43-ae6c-8de1bcae0de9', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'mock', '第1回 全統共通テスト模試', '河合塾', '2026-05-17', null, 450, 700, null, 54.8, '早稲田大学 商学部', 'D', '');
+insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
+  ('34a27cd4-0e62-4a43-ae6c-8de1bcae0de9', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 141, 200, 56.2, 0),
+  ('34a27cd4-0e62-4a43-ae6c-8de1bcae0de9', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '数学', 112, 200, 52.1, 1),
+  ('34a27cd4-0e62-4a43-ae6c-8de1bcae0de9', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 136, 200, 55, 2),
+  ('34a27cd4-0e62-4a43-ae6c-8de1bcae0de9', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 61, 100, 53.9, 3);
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('e5618ce4-a67d-4145-a2ff-406a9a3fe71a', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'mock', '第2回 全統記述模試', '河合塾', '2026-08-23', null, 371, 600, null, 57.3, '早稲田大学 商学部', 'C', '');
+insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
+  ('e5618ce4-a67d-4145-a2ff-406a9a3fe71a', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 132, 200, 60.4, 0),
+  ('e5618ce4-a67d-4145-a2ff-406a9a3fe71a', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 118, 200, 56.9, 1),
+  ('e5618ce4-a67d-4145-a2ff-406a9a3fe71a', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 121, 200, 54.1, 2);
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'mock', '第2回 全統共通テスト模試', '河合塾', '2026-08-30', null, 485, 700, null, 58.1, '早稲田大学 商学部', 'C', '');
+insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
+  ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 158, 200, 61, 0),
+  ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '数学', 118, 200, 53.4, 1),
+  ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 142, 200, 57.2, 2),
+  ('4f8b2227-f103-486a-a8a0-deaba7cd1f4e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 67, 100, 56.8, 3);
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'past', '早稲田大学 商学部（地歴・公民型）', '', '2026-09-20', 2025, 118, 200, 130, null, '', null, '合格最低点は得点調整後の公表値（129.95点）');
+insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
+  ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 49, 80, null, 0),
+  ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 37, 60, null, 1),
+  ('a8a9fb55-5556-4732-a46c-78b5b23e5786', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 32, 60, null, 2);
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('7e56b357-e408-4b52-a1e7-e92d2cceb5f2', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '3cdb25bb-3f19-4e54-a9c6-e82612fa4b13', 'past', '早稲田大学 商学部（地歴・公民型）', '', '2026-09-27', 2024, 124, 200, null, null, '', null, '合格最低点はまだ入れていません');
+insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
+  ('7e56b357-e408-4b52-a1e7-e92d2cceb5f2', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 53, 80, null, 0),
+  ('7e56b357-e408-4b52-a1e7-e92d2cceb5f2', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '国語', 38, 60, null, 1),
+  ('7e56b357-e408-4b52-a1e7-e92d2cceb5f2', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 33, 60, null, 2);
+insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values ('2d028b9f-f692-4a2e-a256-f38bbb26a45e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '0f7f018a-db4c-4ce9-a7cb-d68e84ce6ced', 'mock', '第2回 全統記述模試', '河合塾', '2026-08-23', null, 402, 600, null, 61.5, '慶應義塾大学 経済学部', 'B', '');
+insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values
+  ('2d028b9f-f692-4a2e-a256-f38bbb26a45e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '英語', 141, 200, 63, 0),
+  ('2d028b9f-f692-4a2e-a256-f38bbb26a45e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '数学', 128, 200, 60.2, 1),
+  ('2d028b9f-f692-4a2e-a256-f38bbb26a45e', 'f013ee69-3c02-45b0-a988-1ae377a443ed', '世界史', 133, 200, 59.8, 2);
+insert into public.school_billing (school_id, status, seats, trial_end) values ('f013ee69-3c02-45b0-a988-1ae377a443ed', 'trialing', 4, ('2026-10-31'::date + time '23:59') at time zone 'Asia/Tokyo');
 commit;

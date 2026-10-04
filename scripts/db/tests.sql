@@ -108,7 +108,7 @@ begin
   if (select count(*) from public.tasks) <> 46 then raise exception 'T5 FAILED: own tasks %', (select count(*) from public.tasks); end if;
   if (select count(*) from public.coach_notes) <> 0 then raise exception 'T5 FAILED: coach notes visible to student'; end if;
   if (select count(*) from public.quiz_versions) <> 0 then raise exception 'T5 FAILED: quiz versions visible to student'; end if;
-  if (select count(*) from public.profiles) <> 2 then raise exception 'T5 FAILED: profiles % (self + coach expected)', (select count(*) from public.profiles); end if;
+  if (select count(*) from public.profiles) <> 3 then raise exception 'T5 FAILED: profiles % (self + main and sub coach expected)', (select count(*) from public.profiles); end if;
   if (select count(*) from public.materials) <> 4 then raise exception 'T5 FAILED: materials %', (select count(*) from public.materials); end if;
   if (select count(*) from public.coach_open_slots) = 0 then raise exception 'T5 FAILED: student cannot see coach open slots'; end if;
   if (select count(*) from public.meetings where student_id <> auth.uid()) <> 0 then raise exception 'T5 FAILED: other students meetings visible'; end if;
@@ -381,7 +381,7 @@ do $$
 begin
   if (select count(*) from public.students) <> 4 then raise exception 'T21 FAILED: admin students'; end if;
   if (select count(*) from public.chat_messages) <> 0 then raise exception 'T21 FAILED: admin can read AI chat'; end if;
-  if (select count(*) from public.profiles) <> 7 then raise exception 'T21 FAILED: admin profiles %', (select count(*) from public.profiles); end if;
+  if (select count(*) from public.profiles) <> 8 then raise exception 'T21 FAILED: admin profiles %', (select count(*) from public.profiles); end if;
   begin
     update public.profiles set role = 'coach' where id = auth.uid();
     raise exception 'T21 FAILED: admin changed own role';
@@ -685,6 +685,266 @@ begin
   get diagnostics n = row_count;
   if n <> 0 then raise exception 'T34 FAILED: deleted another school tasks'; end if;
   raise notice 'T34 OK: stamps and cross-school writes';
+end $$;
+reset role;
+
+
+-- =========================================================
+-- 2026-10-05：主担当と副担当・保護者・成績・通知・契約
+-- =========================================================
+-- T35：主担当はいつも1人。副担当を足しても主担当は変わらない。付け替えは運営だけ。主担当を外すと残りが主担当になる
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+do $$
+declare h uuid := current_setting('test.hina')::uuid; c2 uuid := 'a0000000-0000-4000-8000-0000000000c2'; c1 uuid := current_setting('test.coach')::uuid;
+begin
+  insert into public.coach_assignments (coach_id, student_id) values (c2, h);
+  if (select coach_id from public.coach_assignments where student_id = h and is_main) <> c1 then raise exception 'T35 FAILED: main changed by adding sub'; end if;
+  perform public.set_main_coach(h, c2);
+  if (select coach_id from public.coach_assignments where student_id = h and is_main) <> c2 then raise exception 'T35 FAILED: set_main_coach'; end if;
+  if (select count(*) from public.coach_assignments where student_id = h and is_main) <> 1 then raise exception 'T35 FAILED: two mains'; end if;
+  delete from public.coach_assignments where student_id = h and coach_id = c2;
+  if (select coach_id from public.coach_assignments where student_id = h and is_main) <> c1 then raise exception 'T35 FAILED: main not promoted after delete'; end if;
+end $$;
+set request.jwt.claim.sub = :'coach';
+do $$
+begin
+  begin
+    perform public.set_main_coach(current_setting('test.hina')::uuid, current_setting('test.coach')::uuid);
+    raise exception 'T35 FAILED: coach could set main';
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'T35 OK: main coach is always one';
+end $$;
+
+-- T36：保護者。講師は自分の担当の生徒にだけ足せる。LINE のつながりは手で入れられない。生徒本人には見えない
+do $$
+declare g uuid; code text; code2 text;
+begin
+  begin
+    insert into public.guardians (student_id, name, line_user_id, linked_at) values (current_setting('test.hina')::uuid, 'なりすまし', 'Ufake', now());
+    raise exception 'T36 FAILED: line_user_id set by coach';
+  exception when insufficient_privilege then null;
+  end;
+  insert into public.guardians (student_id, name, relation) values (current_setting('test.hina')::uuid, '山田 恵子', '母') returning id, link_code into g, code;
+  if code !~ '^[A-HJ-NP-Z2-9]{8}$' then raise exception 'T36 FAILED: link code %', code; end if;
+  begin
+    update public.guardians set line_user_id = 'Ufake', linked_at = now() where id = g;
+    raise exception 'T36 FAILED: coach linked LINE by hand';
+  exception when insufficient_privilege then null;
+  end;
+  code2 := public.renew_link_code(g);
+  if code2 = code then raise exception 'T36 FAILED: code not renewed'; end if;
+  begin
+    insert into public.guardians (student_id, name) values ('b0000000-0000-4000-8000-000000000003', '別の塾');
+    raise exception 'T36 FAILED: other school guardian';
+  exception when insufficient_privilege or foreign_key_violation then null;
+  end;
+  perform set_config('test.guardian', g::text, false);
+  perform set_config('test.code', code2, false);
+end $$;
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  if (select count(*) from public.guardians) <> 0 then raise exception 'T36 FAILED: student sees guardians'; end if;
+end $$;
+reset role;
+set request.jwt.claim.sub = '';
+set role service_role;
+do $$
+declare g uuid;
+begin
+  g := public.link_guardian_line(current_setting('test.school_a')::uuid, lower(substr(current_setting('test.code'), 1, 4) || '-' || substr(current_setting('test.code'), 5)), 'U1234567890abcdef');
+  if g is distinct from current_setting('test.guardian')::uuid then raise exception 'T36 FAILED: link by code (got %)', g; end if;
+  if (select line_user_id from public.guardians where id = g) <> 'U1234567890abcdef' then raise exception 'T36 FAILED: line id'; end if;
+  if public.link_guardian_line(current_setting('test.school_a')::uuid, current_setting('test.code'), 'Uother') is not null then raise exception 'T36 FAILED: code reused'; end if;
+  if public.link_guardian_line('bbbbbbbb-0000-4000-8000-000000000000', current_setting('test.code'), 'Uother') is not null then raise exception 'T36 FAILED: other school code'; end if;
+  raise notice 'T36 OK: guardians and LINE linking';
+end $$;
+reset role;
+
+-- T37：成績。生徒は自分の分だけ書ける。模試と過去問で入れられる項目が違う。講師は担当の生徒の分を見られる
+set role authenticated;
+set request.jwt.claim.sub = :'hina';
+do $$
+declare r uuid;
+begin
+  insert into public.exam_results (student_id, kind, title, provider, taken_on, total_score, total_max, deviation, target, judgement)
+    values (current_setting('test.hina')::uuid, 'mock', '全統共通テスト模試', '河合塾', current_date - 10, 612, 900, 58.4, '早稲田大学 商学部', 'C') returning id into r;
+  insert into public.exam_subject_scores (result_id, subject, score, max_score, deviation) values (r, '英語', 152, 200, 61.2), (r, '数学', 118, 200, 55.0);
+  if (select created_by from public.exam_results where id = r) <> auth.uid() then raise exception 'T37 FAILED: created_by'; end if;
+  begin
+    insert into public.exam_results (student_id, kind, title, taken_on) values (current_setting('test.yuma')::uuid, 'mock', '他人', current_date);
+    raise exception 'T37 FAILED: wrote another student exam';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.exam_results (student_id, kind, title, taken_on, deviation) values (current_setting('test.hina')::uuid, 'past', '早稲田 商', current_date, 50);
+    raise exception 'T37 FAILED: deviation on past exam';
+  exception when check_violation then null;
+  end;
+  insert into public.exam_results (student_id, kind, title, taken_on, exam_year, total_score, total_max, passing_score)
+    values (current_setting('test.hina')::uuid, 'past', '早稲田大学 商学部', current_date - 3, 2025, 98.5, 150, 102.3);
+  perform set_config('test.exam', r::text, false);
+end $$;
+set request.jwt.claim.sub = :'coach';
+do $$
+begin
+  if (select count(*) from public.exam_subject_scores where result_id = current_setting('test.exam')::uuid) <> 2 then raise exception 'T37 FAILED: coach cannot see subjects'; end if;
+end $$;
+set request.jwt.claim.sub = 'b0000000-0000-4000-8000-000000000002';
+do $$
+begin
+  if exists (select 1 from public.exam_results where student_id = current_setting('test.hina')::uuid) then raise exception 'T37 FAILED: other school coach sees exams'; end if;
+  raise notice 'T37 OK: exam results';
+end $$;
+
+-- T38：通知。講師が返信すると生徒に届く。本人は読んだ印だけ付けられる。自分で通知を作れない。人の通知は見えない
+set request.jwt.claim.sub = :'coach';
+do $$
+declare t uuid;
+begin
+  select id into t from public.tasks where student_id = current_setting('test.hina')::uuid and status = 'done' order by on_date desc limit 1;
+  insert into public.task_replies (task_id, body) values (t, 'よくできています') on conflict (task_id) do update set body = excluded.body;
+end $$;
+set request.jwt.claim.sub = :'hina';
+do $$
+declare n bigint;
+begin
+  select id into n from public.notifications where kind = 'reply' order by id desc limit 1;
+  if n is null then raise exception 'T38 FAILED: no reply notification'; end if;
+  update public.notifications set read_at = now() where id = n;
+  begin
+    update public.notifications set title = 'x' where id = n;
+    raise exception 'T38 FAILED: changed title';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    insert into public.notifications (school_id, user_id, kind, title, dedupe_key) values (current_setting('test.school_a')::uuid, auth.uid(), 'reply', 'x', 'x');
+    raise exception 'T38 FAILED: inserted notification';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+set request.jwt.claim.sub = :'yuma';
+do $$
+begin
+  if exists (select 1 from public.notifications where user_id = current_setting('test.hina')::uuid) then raise exception 'T38 FAILED: sees others'; end if;
+  raise notice 'T38 OK: notifications';
+end $$;
+
+-- T39：面談の通知。講師が入れると生徒に届く。同じ週に入れ直したときは「取り消し」を出さない
+reset role;
+select coalesce(max(id), 0) as n0 from public.notifications \gset
+set test.n0 = :'n0';
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare d date := private.local_today(current_setting('test.misaki')::uuid) + 35;
+begin
+  d := d - (extract(isodow from d)::int - 1) + 2;   -- 5週あとの水曜
+  perform set_config('test.meet_day', d::text, false);
+  perform public.book_meeting(d, '20:00', current_setting('test.misaki')::uuid);
+end $$;
+do $$
+begin
+  perform public.book_meeting(current_setting('test.meet_day')::date + 1, '20:30', current_setting('test.misaki')::uuid);
+end $$;
+reset role;
+do $$
+declare booked int; cancelled int;
+begin
+  select count(*) filter (where kind = 'meeting_booked'), count(*) filter (where kind = 'meeting_cancelled') into booked, cancelled
+    from public.notifications where user_id = current_setting('test.misaki')::uuid and id > current_setting('test.n0')::bigint;
+  if booked <> 2 or cancelled <> 0 then raise exception 'T39 FAILED: booked % cancelled %', booked, cancelled; end if;
+  if exists (select 1 from public.notifications where user_id = current_setting('test.coach')::uuid and kind like 'meeting%' and id > current_setting('test.n0')::bigint) then
+    raise exception 'T39 FAILED: coach notified about own booking';
+  end if;
+  raise notice 'T39 OK: meeting notifications';
+end $$;
+
+-- T40：時刻で決まる通知。予定の15分前に1回だけ。本人が切った種類は届かない。サーバだけが呼べる
+do $$
+declare now_t time; t uuid; n int; tz text; off int;
+begin
+  -- いつ流しても同じ結果になるよう、生徒のタイムゾーンを「いまが昼ごろ」になる所にする（テストの間だけ）
+  off := 12 - extract(hour from now() at time zone 'UTC')::int;
+  tz := 'Etc/GMT' || case when off > 0 then '-' || off when off < 0 then '+' || (-off) else '' end;
+  update public.profiles set timezone = tz where id = current_setting('test.yuma')::uuid;
+  now_t := (now() at time zone tz)::time;
+  delete from public.tasks where student_id = current_setting('test.yuma')::uuid and on_date = (now() at time zone tz)::date and status = 'todo';
+  insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title)
+    values (current_setting('test.yuma')::uuid, (now() at time zone tz)::date, date_trunc('minute', now_t + interval '10 minutes')::time, 15, 'school', '学校の課題') returning id into t;
+  perform public.enqueue_due_notifications();
+  perform public.enqueue_due_notifications();
+  select count(*) into n from public.notifications where dedupe_key = 'task_start:' || t;
+  if n <> 1 then raise exception 'T40 FAILED: task_start count %', n; end if;
+  insert into public.notification_prefs (user_id, task_start) values (current_setting('test.yuma')::uuid, false);
+  insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title)
+    values (current_setting('test.yuma')::uuid, (now() at time zone tz)::date, date_trunc('minute', now_t + interval '12 minutes')::time, 15, 'school', '学校の課題2') returning id into t;
+  perform public.enqueue_due_notifications();
+  if exists (select 1 from public.notifications where dedupe_key = 'task_start:' || t) then raise exception 'T40 FAILED: pref ignored'; end if;
+  update public.profiles set timezone = null where id = current_setting('test.yuma')::uuid;
+  raise notice 'T40 OK: time-based notifications';
+end $$;
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+do $$
+begin
+  begin
+    perform public.enqueue_due_notifications();
+    raise exception 'T40 FAILED: admin could call enqueue';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform public.link_guardian_line(current_setting('test.school_a')::uuid, 'X', 'U');
+    raise exception 'T40 FAILED: admin could call link_guardian_line';
+  exception when insufficient_privilege then null;
+  end;
+end $$;
+reset role;
+
+-- T41：契約は運営が見るだけ。講師は見えない。LINE の鍵はだれも読めない
+insert into public.school_billing (school_id, status, seats) values (:'school_a', 'trialing', 4) on conflict (school_id) do nothing;
+insert into public.school_line_channels (school_id, channel_secret_enc, access_token_enc) values (:'school_a', 'enc', 'enc') on conflict (school_id) do nothing;
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+do $$
+declare n int;
+begin
+  if (select count(*) from public.school_billing) <> 1 then raise exception 'T41 FAILED: admin cannot see billing'; end if;
+  update public.school_billing set status = 'active';
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'T41 FAILED: admin changed billing'; end if;
+  if (select count(*) from public.school_line_channels) <> 0 then raise exception 'T41 FAILED: admin reads LINE secrets'; end if;
+  begin
+    update public.schools set line_basic_id = '@actify-demo' where id = current_setting('test.school_a')::uuid;
+  exception when others then raise exception 'T41 FAILED: admin cannot set line id: %', sqlerrm;
+  end;
+end $$;
+set request.jwt.claim.sub = :'coach';
+do $$
+begin
+  if (select count(*) from public.school_billing) <> 0 then raise exception 'T41 FAILED: coach sees billing'; end if;
+  if (select count(*) from public.weekly_reports) <> 0 then null; end if;
+  raise notice 'T41 OK: billing and secrets';
+end $$;
+reset role;
+
+-- T42：未ログインは新しい表も読めない
+set role anon;
+do $$
+begin
+  begin
+    perform 1 from public.guardians;
+    raise exception 'T42 FAILED: anon reads guardians';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    perform 1 from public.exam_results;
+    raise exception 'T42 FAILED: anon reads exams';
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'T42 OK: anon blocked';
 end $$;
 reset role;
 

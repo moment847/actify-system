@@ -103,6 +103,27 @@ P(`insert into public.resources (school_id, name, file_path, target_student_id, 
 for (const [sid, log] of Object.entries(st.chat))
   for (const m of log) P(`insert into public.chat_messages (school_id, student_id, sender, body, mood) values (${q(SCHOOL)}, ${q(uuid(sid))}, ${q(m.from === 'bot' ? 'bot' : 'student')}, ${q(m.text)}, ${q(m.mood || null)});`);
 
+// 2026-10-05 に足したデモ：副担当・保護者（LINE）・模試と過去問・契約（scripts/seed/demo-extra.json）
+const ex = JSON.parse(readFileSync(join(root, 'scripts/seed/demo-extra.json'), 'utf8'));
+P(`update public.schools set line_basic_id = ${q(ex.lineBasicId)} where id = ${q(SCHOOL)};`);
+for (const c of ex.subCoaches) {
+  const id = uuid(c.id);
+  P(`insert into auth.users (instance_id, id, aud, role, email, encrypted_password, email_confirmed_at, raw_app_meta_data, raw_user_meta_data, confirmation_token, recovery_token, email_change, email_change_token_new)
+  values ('00000000-0000-0000-0000-000000000000', ${q(id)}, 'authenticated', 'authenticated', ${q(c.email)}, extensions.crypt(${q(DEMO_PASSWORD)}, extensions.gen_salt('bf')), now(), '{"provider":"email","providers":["email"]}', '{}', '', '', '', '');
+insert into auth.identities (provider_id, user_id, identity_data, provider, last_sign_in_at)
+  values (${q(id)}, ${q(id)}, jsonb_build_object('sub', ${q(id)}, 'email', ${q(c.email)}, 'email_verified', true), 'email', now());
+insert into public.profiles (id, school_id, role, display_name, status) values (${q(id)}, ${q(SCHOOL)}, 'coach', ${q(c.name)}, 'active');`);
+  for (const sid of c.students) P(`insert into public.coach_assignments (coach_id, student_id, school_id) values (${q(id)}, ${q(uuid(sid))}, ${q(SCHOOL)});`);
+}
+for (const g of ex.guardians)
+  P(`insert into public.guardians (id, school_id, student_id, name, relation, line_user_id, linked_at, weekly_report) values (${q(uuid('g:' + g.id))}, ${q(SCHOOL)}, ${q(uuid(g.student))}, ${q(g.name)}, ${q(g.relation)}, ${g.linked ? q(g.lineUser) : 'null'}, ${g.linked ? `(${q(shift('2026-09-08'))}::date + time '20:00') at time zone 'Asia/Tokyo'` : 'null'}, ${g.weeklyReport !== false});`);
+for (const x of ex.exams) {
+  P(`insert into public.exam_results (id, school_id, student_id, kind, title, provider, taken_on, exam_year, total_score, total_max, passing_score, deviation, target, judgement, note) values (${q(uuid('x:' + x.id))}, ${q(SCHOOL)}, ${q(uuid(x.student))}, ${q(x.kind)}, ${q(x.title)}, ${q(x.provider || '')}, ${q(shift(x.date))}, ${x.year ?? 'null'}, ${x.score ?? 'null'}, ${x.max ?? 'null'}, ${x.passing ?? 'null'}, ${x.dev ?? 'null'}, ${q(x.target || '')}, ${q(x.judge || null)}, ${q(x.note || '')});`);
+  P(`insert into public.exam_subject_scores (result_id, school_id, subject, score, max_score, deviation, seq) values\n` +
+    x.subjects.map(([sub, sc, mx, dv], i) => `  (${q(uuid('x:' + x.id))}, ${q(SCHOOL)}, ${q(sub)}, ${sc}, ${mx}, ${dv ?? 'null'}, ${i})`).join(',\n') + ';');
+}
+P(`insert into public.school_billing (school_id, status, seats, trial_end) values (${q(SCHOOL)}, ${q(ex.billing.status)}, ${ex.billing.seats}, (${q(shift(ex.billing.trialEnd))}::date + time '23:59') at time zone 'Asia/Tokyo');`);
+
 P('commit;');
 writeFileSync(join(root, 'supabase/seed.sql'), out.join('\n') + '\n');
 // テストとアプリから、デモのIDを引けるように
