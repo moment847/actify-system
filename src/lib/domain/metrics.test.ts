@@ -17,6 +17,7 @@ const run = () => schoolMetrics({
     { taskId: 't2', studentId: 's2', at: '2026-09-28T10:00:00Z' },
     { taskId: 't3', studentId: 's1', at: '2026-09-29T00:00:00Z' },
     { taskId: 't4', studentId: 's3', at: '2026-09-20T00:00:00Z' },
+    { taskId: 't5', studentId: 's3', at: '2026-09-10T00:00:00Z' }, // 2週間より前：返信待ちに数えない
   ],
   replies: [
     { taskId: 't1', coachId: 'c2', at: '2026-10-01T11:30:00Z' }, // 副担当が返した

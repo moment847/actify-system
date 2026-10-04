@@ -1,13 +1,15 @@
 // 運営（塾の管理者）の数字。生徒の記録・振り返り・講師の返信から作る。DB に集計表は持たない（毎回数える）。
 // - 記録を続けている割合：その週に1回でも「完了」を記録した在籍生徒の割合（週は月曜はじまり、生徒の暦の日付）
 // - 止まっている生徒：最後の記録から3日以上（講師のホームの「記録が○日ない」と同じ基準）
-// - 返信の速さ：生徒の振り返りから講師の返信までの時間（中央値）。返信の無い振り返りは「未返信」として別に数える
+// - 返信の速さ：生徒の振り返りから講師の返信までの時間（中央値）。返信の無い振り返りは「返信待ち」として別に数える（直近2週間のひとことだけ）
 import { dateAdd, daysBetween, pct, weekStart } from './dates';
 import type { DateStr } from './types';
 
 export const STALL_DAYS = 3;
 /** 振り返りから何時間たっても返信が無ければ「返信待ちが長い」に数えるか */
 export const SLOW_REPLY_HOURS = 48;
+/** 返信待ちに数えるのは、直近この日数のひとことだけ（古いひとことに今さら返信は求めない） */
+export const WAIT_WINDOW_DAYS = 14;
 
 export interface MetricStudent { id: string; name: string; coachIds: string[]; mainCoachId: string | null; joinedOn: DateStr }
 export interface MetricCoach { id: string; name: string }
@@ -78,7 +80,8 @@ export function schoolMetrics(input: {
       if (h >= 0) lags.push(h);
     }
     // 返信待ちは主担当に数える（副担当にも数えると、同じ1件が2人の「未返信」になる）
-    const waitingList = input.feedback.filter(f => mainOf.has(studentOf.get(f.taskId) ?? '') && !replyOf.has(f.taskId));
+    const waitingList = input.feedback.filter(f => mainOf.has(studentOf.get(f.taskId) ?? '') && !replyOf.has(f.taskId)
+      && (input.now.getTime() - Date.parse(f.at)) / 864e5 < WAIT_WINDOW_DAYS);
     const waitingLong = waitingList.filter(f => (input.now.getTime() - Date.parse(f.at)) / 36e5 >= SLOW_REPLY_HOURS).length;
     const m = median(lags);
     return { id: c.id, name: c.name, students: mine.length, replied: lags.length, medianHours: m == null ? null : Math.round(m * 10) / 10, waiting: waitingList.length, waitingLong };
