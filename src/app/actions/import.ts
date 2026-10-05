@@ -38,13 +38,20 @@ async function coachesOf(admin: Admin, schoolId: string, emails: Map<string, str
   return (data ?? []).map(c => ({ id: c.id, name: c.display_name, email: byId.get(c.id) ?? '' }));
 }
 
+/** 「もう登録されています」と言ってよいのは自分の塾の人だけ（ほかの塾に居るかどうかは教えない） */
+async function schoolEmails(admin: Admin, schoolId: string, emails: Map<string, string>): Promise<string[]> {
+  const { data } = await admin.from('profiles').select('id').eq('school_id', schoolId);
+  const ids = new Set((data ?? []).map(p => p.id));
+  return [...emails].filter(([, id]) => ids.has(id)).map(([e]) => e);
+}
+
 export async function previewStudentImport(form: FormData): Promise<Result<ImportPreview & { digest: string }>> {
   return withActor(['admin'], async ({ actor }) => {
     const f = await readFile(form);
     if (typeof f === 'string') return fail(f);
     const admin = createAdminClient();
     const emails = await allEmails(admin);
-    const p = previewImport(f.text, await coachesOf(admin, actor.schoolId, emails), emails.keys());
+    const p = previewImport(f.text, await coachesOf(admin, actor.schoolId, emails), await schoolEmails(admin, actor.schoolId, emails));
     if (p.missingHeaders.length) return fail(`1行目に「${p.missingHeaders.map(h => (h === 'name' ? '名前' : 'メール')).join('」「')}」の列が要ります`);
     return ok(undefined, { ...p, digest: f.digest });
   });
@@ -57,7 +64,7 @@ export async function commitStudentImport(form: FormData): Promise<Result<{ crea
     if (form.get('digest') !== f.digest) return fail('下見のあとでファイルが変わりました。もう一度下見してください');
     const admin = createAdminClient();
     const emails = await allEmails(admin);
-    const p = previewImport(f.text, await coachesOf(admin, actor.schoolId, emails), emails.keys());
+    const p = previewImport(f.text, await coachesOf(admin, actor.schoolId, emails), await schoolEmails(admin, actor.schoolId, emails));
     if (!p.rows.length) return fail('登録できる行がありません');
     const failed: { line: number; text: string }[] = [];
     let created = 0;
@@ -74,7 +81,8 @@ export async function commitStudentImport(form: FormData): Promise<Result<{ crea
 /** 1人を作る。途中で失敗したら、作った分を消して元に戻す（同じ CSV で登録し直せるように） */
 async function createStudent(admin: Admin, schoolId: string, r: ImportRow): Promise<string | null> {
   const { data, error } = await admin.auth.admin.createUser({ email: r.email, email_confirm: true });
-  if (error || !data.user) return error?.message?.includes('already') ? `${r.email} はもう登録されています` : 'アカウントを作れませんでした';
+  // ほかの塾に同じメールがあるときもここで落ちる。理由は言わない（ほかの塾の登録の有無を教えない）
+  if (error || !data.user) return `${r.email} は登録できませんでした（別のメールアドレスで登録するか、Actify の運営にお問い合わせください）`;
   const uid = data.user.id;
   const undo = async (e: { message?: string; code?: string }) => { await admin.auth.admin.deleteUser(uid); return dbError(e); };
   const { error: e1 } = await admin.from('profiles').insert({ id: uid, school_id: schoolId, role: 'student', display_name: r.name });

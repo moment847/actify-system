@@ -17,7 +17,7 @@ export interface Actor {
   today: string;
 }
 
-/** ログインしている人。ログインしていない・退会・プロフィールが無いときは null */
+/** ログインしている人。ログインしていない・休会中・退会・プロフィールが無いときは null（休会中は請求に数えないので使えない。DB の my_role も同じ） */
 export async function loadActor(supabase?: SupabaseClient): Promise<Actor | null> {
   const sb = supabase ?? (await createClient());
   const { data: claims } = await sb.auth.getClaims();
@@ -26,7 +26,7 @@ export async function loadActor(supabase?: SupabaseClient): Promise<Actor | null
   const { data: p } = await sb.from('profiles')
     .select('id, school_id, role, display_name, status, timezone, schools(name, timezone)')
     .eq('id', uid).maybeSingle();
-  if (!p || p.status === 'withdrawn') return null;
+  if (!p || p.status !== 'active') return null;
   const school = (Array.isArray(p.schools) ? p.schools[0] : p.schools) as { name: string; timezone: string } | null;
   const timeZone = p.timezone || school?.timezone || 'Asia/Tokyo';
   return { id: p.id, schoolId: p.school_id, schoolName: school?.name ?? '', role: p.role as Role, name: p.display_name, timeZone, today: localToday(timeZone) };

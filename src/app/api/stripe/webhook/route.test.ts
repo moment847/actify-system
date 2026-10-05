@@ -13,7 +13,7 @@ vi.mock('@/lib/supabase/admin', () => ({
       },
       upsert: async (row: Record<string, unknown>) => { upserts.push({ table, row }); return { error: null }; },
       delete: () => ({ eq: async (_: string, id: string) => { events.delete(id); return { error: null }; } }),
-      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { school_id: 'sch-from-customer' } }) }) }),
+      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { school_id: 'sch-from-customer', stripe_customer_id: 'cus_1' } }) }) }),
     }),
   }),
 }));
@@ -63,5 +63,10 @@ describe('Stripe の Webhook', () => {
   it('支払いページの完了で、塾と Stripe の顧客・契約を結ぶ', async () => {
     await post({ id: 'evt_3', type: 'checkout.session.completed', data: { object: { client_reference_id: 'sch', customer: 'cus_1', subscription: 'sub_1' } } });
     expect(upserts[0].row).toEqual(expect.objectContaining({ school_id: 'sch', stripe_customer_id: 'cus_1', stripe_subscription_id: 'sub_1' }));
+  });
+
+  it('塾に保存してある顧客と違う決済は、塾の契約にしない', async () => {
+    await post({ id: 'evt_4', type: 'checkout.session.completed', data: { object: { client_reference_id: 'sch', customer: 'cus_stranger', subscription: 'sub_x' } } });
+    expect(upserts).toEqual([]);
   });
 });

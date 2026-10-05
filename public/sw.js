@@ -6,7 +6,9 @@ self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', e => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'Actify', body: e.data ? e.data.text() : '' }; }
-  const url = typeof d.url === 'string' && d.url.startsWith('/') && !d.url.startsWith('//') ? d.url : '/';
+  // 同じサイトの中だけ開く（'/\t/evil' のような書き方もブラウザは別サイトと読むので、origin で確かめる）
+  let url = '/';
+  try { const u = new URL(typeof d.url === 'string' ? d.url : '/', self.location.origin); if (u.origin === self.location.origin) url = u.pathname + u.search; } catch { url = '/'; }
   e.waitUntil(self.registration.showNotification(d.title || 'Actify', {
     body: d.body || '', tag: d.tag, data: { url }, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', lang: 'ja',
   }));

@@ -19,8 +19,13 @@ export async function POST(req: Request) {
   try {
     const o = ev.data.object;
     if (ev.type === 'checkout.session.completed') {
+      // 塾は client_reference_id で決めるが、その塾に保存してある顧客（startCheckout が先に入れる）と一致するときだけ写す。
+      // Payment Link の URL でも client_reference_id は指定できるので、第三者の決済が塾の契約に化けないように
       const schoolId = o.client_reference_id as string | null;
-      if (schoolId) await admin.from('school_billing').upsert({ school_id: schoolId, stripe_customer_id: o.customer as string, stripe_subscription_id: o.subscription as string, updated_at: new Date().toISOString() }, { onConflict: 'school_id' });
+      const { data: cur } = schoolId ? await admin.from('school_billing').select('stripe_customer_id').eq('school_id', schoolId).maybeSingle() : { data: null };
+      if (schoolId && cur?.stripe_customer_id === o.customer) {
+        await admin.from('school_billing').upsert({ school_id: schoolId, stripe_customer_id: o.customer as string, stripe_subscription_id: o.subscription as string, updated_at: new Date().toISOString() }, { onConflict: 'school_id' });
+      } else console.error('[stripe webhook] checkout for unknown school/customer', { schoolId, customer: o.customer });
     } else if (ev.type.startsWith('customer.subscription.')) {
       // イベントは順番どおりに届くとは限らないので、Stripe から今の状態を読み直して写す
       const sent = o as unknown as StripeSubscription;

@@ -32,7 +32,10 @@ export async function readToc(image: { mediaType: 'image/jpeg' | 'image/png' | '
     const call = { model: res.model, promptVersion: TOC_OCR_PROMPT_VERSION, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens, costJpy: costJpy(res.model, res.usage, env.usdJpy()) };
     if (res.stop_reason === 'refusal') return { result: null, call: { ...call, error: 'refusal' } };
     const text = res.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('');
-    const parsed = TocResult.safeParse(JSON.parse(text || '{}'));
+    // JSON が途中で切れていても（max_tokens に当たった）、原価は実際のトークン数で残す（0 円にしない）
+    let json: unknown;
+    try { json = JSON.parse(text || '{}'); } catch { return { result: null, call: { ...call, error: 'parse' } }; }
+    const parsed = TocResult.safeParse(json);
     if (!parsed.success) return { result: null, call: { ...call, error: 'parse' } };
     const lines = parsed.data.lines.map(s => s.trim()).filter(Boolean).slice(0, 500);
     return { result: { ...parsed.data, name: parsed.data.name.trim(), lines }, call };

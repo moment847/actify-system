@@ -968,4 +968,56 @@ begin
 end $$;
 reset role;
 
+-- T44：休会中の生徒は自分の予定も読めない（請求に数えない人は使えない）。在籍に戻せば読める
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+update public.profiles set status = 'paused' where id = current_setting('test.hina')::uuid;
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  if (select count(*) from public.tasks) <> 0 then raise exception 'T44 FAILED: paused student reads tasks'; end if;
+  if (select count(*) from public.students) <> 0 then raise exception 'T44 FAILED: paused student reads students'; end if;
+  if (select count(*) from public.exam_results) <> 0 then raise exception 'T44 FAILED: paused student reads exams'; end if;
+  if private.my_role() is not null then raise exception 'T44 FAILED: paused has role'; end if;
+end $$;
+set request.jwt.claim.sub = :'admin';
+update public.profiles set status = 'active' where id = current_setting('test.hina')::uuid;
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  if (select count(*) from public.tasks) = 0 then raise exception 'T44 FAILED: active student lost tasks'; end if;
+  raise notice 'T44 OK: paused members are locked out';
+end $$;
+reset role;
+
+-- T45：保護者・成績を別の生徒に移せない。通知の url にタブは入らない
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare n int;
+begin
+  begin
+    update public.guardians set student_id = current_setting('test.yuma')::uuid where id = current_setting('test.guardian')::uuid;
+    raise exception 'T45 FAILED: guardian moved to another student';
+  exception when insufficient_privilege then null;
+  end;
+  begin
+    update public.exam_results set student_id = current_setting('test.yuma')::uuid where student_id = current_setting('test.hina')::uuid;
+    get diagnostics n = row_count;
+    if n > 0 then raise exception 'T45 FAILED: exam moved to another student'; end if;
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'T45 OK: rows stay with their student';
+end $$;
+reset role;
+do $$
+begin
+  begin
+    insert into public.notifications (school_id, user_id, kind, title, url, dedupe_key)
+      values (current_setting('test.school_a')::uuid, current_setting('test.hina')::uuid, 'reply', 'x', E'/\t/evil.example', 't45');
+    raise exception 'T45 FAILED: tab in url accepted';
+  exception when check_violation then null;
+  end;
+end $$;
+
 \echo 'ALL DB TESTS PASSED'

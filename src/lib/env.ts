@@ -4,6 +4,14 @@ const need = (name: string) => () => {
   if (!v) throw new Error(`環境変数 ${name} が設定されていません（README の「環境変数」を参照）`);
   return v;
 };
+/** 正の数（整数）。壊れた値で原価が 0 円や NaN になって予算が効かなくなるのを防ぐ */
+const posInt = (name: string, fallback: number) => () => {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) throw new Error(`環境変数 ${name} は 1 以上の整数にしてください（今の値: ${raw}）`);
+  return n;
+};
 
 export const env = {
   supabaseUrl: need('NEXT_PUBLIC_SUPABASE_URL'),
@@ -14,10 +22,10 @@ export const env = {
   chatModel: () => process.env.ACTIFY_CHAT_MODEL || 'claude-opus-5-5',
   ocrModel: () => process.env.ACTIFY_OCR_MODEL || 'claude-opus-5-5',
   /** AI の原価を円にするときの為替（1ドル何円か）。整数 */
-  usdJpy: () => Number(process.env.USD_JPY || 150),
+  usdJpy: posInt('USD_JPY', 150),
   /** 1回の呼び出しの見込みの原価（円）。塾の月の予算を超えないかを、呼ぶ前にこの額で確かめる */
-  aiChatEstimateJpy: () => Number(process.env.AI_CHAT_ESTIMATE_JPY || 10),
-  aiOcrEstimateJpy: () => Number(process.env.AI_OCR_ESTIMATE_JPY || 40),
+  aiChatEstimateJpy: posInt('AI_CHAT_ESTIMATE_JPY', 30),
+  aiOcrEstimateJpy: posInt('AI_OCR_ESTIMATE_JPY', 40),
   /** 招待・パスワードのメールのリンクの戻り先（https://… 末尾の / なし） */
   siteUrl: need('NEXT_PUBLIC_SITE_URL'),
   /** 期限つきのファイルURLの有効時間（秒） */
@@ -38,5 +46,5 @@ export const env = {
   stripeWebhookSecret: () => process.env.STRIPE_WEBHOOK_SECRET || null,
   stripePriceId: () => process.env.STRIPE_PRICE_ID || null,
   /** 初めて契約する塾の無料期間（日）。0 なら無し */
-  stripeTrialDays: () => Number(process.env.STRIPE_TRIAL_DAYS || 30),
+  stripeTrialDays: () => { const n = Number(process.env.STRIPE_TRIAL_DAYS ?? 30); return Number.isInteger(n) && n >= 0 ? n : 30; },
 };

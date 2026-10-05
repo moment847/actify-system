@@ -15,6 +15,8 @@ export interface BotResult {
 }
 
 const MAX_HISTORY = 20;
+/** 履歴の合計の文字数の上限。件数だけで切ると 1件 4,000 字 × 20 件 = 8 万字（数万トークン）を毎回送れてしまう */
+const MAX_HISTORY_CHARS = 8000;
 /** 保存して画面に出す返事の長さの上限（文字）。DB の上限 4,000 より短くし、超えたら文の切れ目で切る */
 export const MAX_REPLY_CHARS = 1500;
 
@@ -40,6 +42,7 @@ export async function botReply(args: {
   const model = env.chatModel();
   // 履歴：最初は生徒の発言から（あいさつなど、先頭の Actifyくんの発言は落とす）
   const hist = args.history.slice(-MAX_HISTORY);
+  for (let total = 0, i = hist.length - 1; i >= 0; i--) { total += hist[i].body.length; if (total > MAX_HISTORY_CHARS) { hist.splice(0, i + 1); break; } }
   while (hist.length && hist[0].sender === 'bot') hist.shift();
   const messages: Anthropic.Beta.BetaMessageParam[] = hist.map(h => ({ role: h.sender === 'student' ? 'user' : 'assistant', content: h.body || '（写真）' }));
   const content: Anthropic.Beta.BetaContentBlockParam[] = [{ type: 'text', text: contextMessage(studentContext(args.world, args.studentId, args.info)) }];

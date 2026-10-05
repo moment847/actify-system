@@ -177,7 +177,7 @@ export async function sendChat(input: { text: string; imagePath?: string }): Pro
       }
       return ok(undefined, { reply, mood: r.reply.mood });
     } finally {
-      if (reservationId) await settleAi(reservationId, call);
+      if (reservationId) await settleAi(reservationId, call, env.aiChatEstimateJpy());
     }
   });
 }

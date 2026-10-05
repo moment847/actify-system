@@ -12,7 +12,7 @@ import { dateAdd, localToday, weekStart } from '@/lib/domain/dates';
 import { schoolMetrics, type SchoolMetrics } from '@/lib/domain/metrics';
 import { seal } from '@/lib/integrations/secret-box';
 import { createCheckout, createCustomer, createPortal } from '@/lib/integrations/stripe';
-import { countSeats } from '@/server/billing';
+import { countSeats, findLiveSubscription } from '@/server/billing';
 import { changed, dbError, fail, ok, withActor, zId, type Result } from '@/server/result';
 
 const done = () => revalidatePath('/', 'layout');
@@ -28,7 +28,8 @@ export interface TocDraft { name: string; subject: z.infer<typeof zSubject>; kin
  */
 export async function readTocImages(input: { paths: string[] }): Promise<Result<{ drafts: TocDraft[] }>> {
   return withActor(['admin'], async ({ actor }) => {
-    const v = z.object({ paths: z.array(z.string().max(300)).min(1).max(30) }).parse(input);
+    // 1回 10 枚まで：1枚 30 秒かかりうるので、30 枚を順に読むと関数が途中で切られ、予約（pending）が宙に浮く
+    const v = z.object({ paths: z.array(z.string().max(300)).min(1).max(10) }).parse(input);
     if (v.paths.some(p => !pathIn(p, actor.schoolId + '/'))) return fail('写真の場所が正しくありません');
     const admin = createAdminClient(), drafts: TocDraft[] = [];
     let stop: AiBlock | null = env.anthropicApiKey() ? null : 'unknown';
@@ -48,7 +49,7 @@ export async function readTocImages(input: { paths: string[] }): Promise<Result<
         call = res.call;
         drafts.push(res.result && res.result.lines.length ? { name: res.result.name || fileName, subject: res.result.subject, kind: res.result.kind, lines: res.result.lines, imagePath: path, unread: false } : empty);
       } finally {
-        await settleAi(r.id, call ? { ...call, error: 'error' in call ? call.error ?? null : null } : null);
+        await settleAi(r.id, call ? { ...call, error: 'error' in call ? call.error ?? null : null } : null, env.aiOcrEstimateJpy());
       }
     }
     if (stop && stop !== 'unknown') {
@@ -332,6 +333,8 @@ export async function startCheckout(): Promise<Result<{ url: string }>> {
     const { data: b } = await admin.from('school_billing').select('stripe_customer_id, stripe_subscription_id, status').eq('school_id', actor.schoolId).maybeSingle();
     if (b?.stripe_subscription_id && !['canceled', 'incomplete_expired'].includes(b.status)) return fail('もう契約しています。変更は「支払いの管理」から');
     let customer = b?.stripe_customer_id ?? null;
+    // Webhook がまだ届いていない・設定されていないときに、支払いページを2回通って契約が2つになるのを防ぐ（Stripe に直接聞く）
+    if (customer && (await findLiveSubscription(admin, key, actor.schoolId, customer))) { done(); return fail('もう契約しています。変更は「支払いの管理」から'); }
     if (!customer) {
       const { data: u } = await admin.auth.admin.getUserById(actor.id);
       customer = (await createCustomer(key, { name: actor.schoolName, email: u.user?.email ?? undefined, schoolId: actor.schoolId })).id;

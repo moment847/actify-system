@@ -38,6 +38,8 @@ async function call<T>(key: string, method: 'GET' | 'POST', path: string, body?:
 
 export interface StripeSubscription {
   id: string; customer: string; status: string;
+  /** 作られた時刻（秒）。古い契約の知らせが遅れて届いたときに見分ける */
+  created?: number;
   trial_end: number | null; cancel_at_period_end: boolean;
   /** 古い API 版はここ、2025-03-31 以降は items の中にある */
   current_period_end?: number;
@@ -62,6 +64,14 @@ export const createPortal = (key: string, p: { customer: string; returnUrl: stri
   call<{ url: string }>(key, 'POST', '/billing_portal/sessions', { customer: p.customer, return_url: p.returnUrl });
 
 export const getSubscription = (key: string, id: string) => call<StripeSubscription>(key, 'GET', `/subscriptions/${encodeURIComponent(id)}`);
+
+/** 生きている契約の状態（解約・期限切れ以外）。この状態の契約があるうちは、新しい契約を作らない */
+export const LIVE_STATUSES = ['trialing', 'active', 'past_due', 'unpaid', 'incomplete', 'paused'] as const;
+export const isLive = (status: string) => (LIVE_STATUSES as readonly string[]).includes(status);
+
+/** その顧客の契約を Stripe から一覧で読む（新しい順）。二重契約を防ぐために、支払いページを作る前に確かめる */
+export const listSubscriptions = (key: string, customer: string) =>
+  call<{ data: StripeSubscription[] }>(key, 'GET', `/subscriptions?customer=${encodeURIComponent(customer)}&status=all&limit=20`).then(r => r.data);
 
 /** 生徒の数を合わせる。日割りは Stripe の既定（次の請求で精算） */
 export const setSeats = (key: string, itemId: string, seats: number, idempotencyKey: string) =>

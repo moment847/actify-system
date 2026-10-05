@@ -3,6 +3,7 @@ import 'server-only';
 // - 送るのは：LINE がつながっていて、週の報告を「送る」にしている保護者。生徒が在籍中のときだけ
 // - 同じ保護者・同じ週には一度だけ（weekly_reports の (保護者, 週) が一意。LINE 側も Retry-Key で一度だけ届く）
 // - 送れなかった週は 'failed' で残し、次の実行で送り直す（月の上限に達したときは、その塾のその週は止める）
+// - 日曜 20:00〜22:50（日本時間）に10分ごとに呼ばれ、1回の実行は時間の予算（WEEKLY_RUN_BUDGET_MS）で手前で止める
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { loadWorld, type Actor } from '@/lib/data/load';
 import { localToday } from '@/lib/domain/dates';
@@ -10,12 +11,21 @@ import { buildWeeklyReport, reportWeek } from '@/lib/domain/weekly-report';
 import { isMonthlyLimit, pushText, retryKeyFor } from '@/lib/integrations/line';
 import { loadLineChannel } from '@/server/line-channel';
 
-export interface WeeklyReportRun { schools: number; sent: number; failed: number; skipped: number; already: number }
+export interface WeeklyReportRun { schools: number; sent: number; failed: number; skipped: number; already: number; timedOut: boolean }
 
-export async function runWeeklyReports(admin: SupabaseClient, now = new Date()): Promise<WeeklyReportRun> {
-  const out: WeeklyReportRun = { schools: 0, sent: 0, failed: 0, skipped: 0, already: 0 };
+/**
+ * 1回の実行で使ってよい時間。Vercel の関数は Pro でも 300 秒で切られ、途中で切られると残りの保護者にその週の報告が届かない。
+ * 手前で止めて、次の実行（10分後。vercel.json）が続きを送る。送った保護者は weekly_reports に残るので二度は送らない
+ */
+export const WEEKLY_RUN_BUDGET_MS = 240_000;
+
+export async function runWeeklyReports(admin: SupabaseClient, now = new Date(), budgetMs = WEEKLY_RUN_BUDGET_MS): Promise<WeeklyReportRun> {
+  const out: WeeklyReportRun = { schools: 0, sent: 0, failed: 0, skipped: 0, already: 0, timedOut: false };
+  const started = Date.now();
+  const overBudget = () => Date.now() - started > budgetMs;
   const { data: channels } = await admin.from('school_line_channels').select('school_id');
   for (const { school_id: schoolId } of channels ?? []) {
+    if (overBudget()) { out.timedOut = true; break; }
     out.schools++;
     const [{ data: school }, ch] = await Promise.all([
       admin.from('schools').select('name, timezone').eq('id', schoolId).single(),
@@ -26,8 +36,9 @@ export async function runWeeklyReports(admin: SupabaseClient, now = new Date()):
       .select('id, student_id, line_user_id, students!inner(profiles!inner(display_name, status, timezone))')
       .eq('school_id', schoolId).eq('weekly_report', true).not('line_user_id', 'is', null);
     let stop = false;
-    const before = { sent: out.sent, failed: out.failed };
+    const week0 = reportWeek(localToday(school.timezone || 'Asia/Tokyo', now));
     for (const g of gs ?? []) {
+      if (overBudget()) { out.timedOut = true; break; }
       const st = (Array.isArray(g.students) ? g.students[0] : g.students) as unknown as { profiles: { display_name: string; status: string; timezone: string | null } | { display_name: string; status: string; timezone: string | null }[] };
       const p = Array.isArray(st.profiles) ? st.profiles[0] : st.profiles;
       const timeZone = p.timezone || school.timezone || 'Asia/Tokyo';
@@ -54,17 +65,19 @@ export async function runWeeklyReports(admin: SupabaseClient, now = new Date()):
         out.failed++;
       }
     }
-    // 塾の運営に、送った数と送れなかった数を知らせる（同じ週に1回）
-    const sent = out.sent - before.sent, failed = out.failed - before.failed;
+    // 塾の運営に、この週の「送った数・送れなかった数」を知らせる。何回かに分けて送るので、数は表（weekly_reports）から数え直して書き換える
+    const [{ count: sent }, { count: failed }] = await Promise.all([
+      admin.from('weekly_reports').select('id', { count: 'exact', head: true }).eq('school_id', schoolId).eq('week_start', week0).eq('status', 'sent'),
+      admin.from('weekly_reports').select('id', { count: 'exact', head: true }).eq('school_id', schoolId).eq('week_start', week0).eq('status', 'failed'),
+    ]);
     if (sent || failed) {
-      const week = reportWeek(localToday(school.timezone || 'Asia/Tokyo', now));
       const { data: admins } = await admin.from('profiles').select('id').eq('school_id', schoolId).eq('role', 'admin').eq('status', 'active');
       if (admins?.length) await admin.from('notifications').upsert(admins.map(a => ({
         school_id: schoolId, user_id: a.id, kind: 'report_sent',
         title: failed ? `週の報告：${failed}件送れませんでした` : `週の報告を${sent}件送りました`,
-        body: failed ? `送れた${sent}件・送れなかった${failed}件。保護者の画面で理由を確かめられます` : '保護者の画面で送った文面を確かめられます',
-        url: '/admin', dedupe_key: `report:${week}`,
-      })), { onConflict: 'user_id,dedupe_key', ignoreDuplicates: true });
+        body: failed ? `送れた${sent ?? 0}件・送れなかった${failed}件。保護者の画面で理由を確かめられます` : '保護者の画面で送った文面を確かめられます',
+        url: '/admin', dedupe_key: `report:${week0}`,
+      })), { onConflict: 'user_id,dedupe_key' });
     }
   }
   return out;
