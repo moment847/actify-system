@@ -115,6 +115,8 @@ export interface World {
   coachOpen: CoachOpenSlot[];
   /** 面談の1回の長さ（分） */
   meetingLength: number;
+  /** coachOpen（面談できる時間）の講師。ほかの講師の面談は、この講師の埋まっている時間に数えない */
+  meetingCoachId?: string | null;
   /** 講師が見送った再テスト：`rv:${studentId}:${unitId}:${回数}` */
   reviewSkips: Set<string>;
 }

@@ -183,7 +183,8 @@ export function meetingSlots(w: World, sid: string, start: DateStr, opts: { avoi
   const len = w.meetingLength, out: { date: DateStr; time: TimeStr; fit: boolean; same: boolean; score: number }[] = [], last = lastMeeting(w, sid);
   weekDays(start).filter(d => canBook(w, d)).forEach(d => coachOpenOn(w, d).forEach(o => {
     for (let s = toMin(o.start); s + len <= toMin(o.end); s += 30) {
-      if (w.meetings.some(m => m.studentId !== sid && m.date === d && toMin(m.time) < s + len && toMin(m.time) + m.len > s)) continue;
+      // この講師の、ほかの生徒の面談（別の講師の面談は、この講師の時間を埋めない）
+      if (w.meetings.some(m => m.studentId !== sid && (!m.coachId || !w.meetingCoachId || m.coachId === w.meetingCoachId) && m.date === d && toMin(m.time) < s + len && toMin(m.time) + m.len > s)) continue;
       if (avoid && w.tasks.some(t => t.studentId === sid && t.status === 'todo' && t.date === d && toMin(t.time) < s + len && toMin(t.time) + t.duration > s)) continue;
       const fit = availOn(w, sid, d).some(a => toMin(a.start) <= s && toMin(a.end) >= s + len);
       const same = !!last && dow(last.date) === dow(d) && last.time === toTime(s);

@@ -79,8 +79,10 @@ export async function unlinkGuardian(id: string): Promise<Result> {
     const gid = zId.parse(id);
     const bad = changed(await sb.from('guardians').update({ line_user_id: null, linked_at: null }, { count: 'exact' }).eq('id', gid), '保護者が見つかりません');
     if (bad) return fail(bad);
-    await sb.rpc('renew_link_code', { p_guardian: gid });
+    const { error } = await sb.rpc('renew_link_code', { p_guardian: gid });
     done();
+    // 外したあとで合言葉を作り直せなかったら、そう言う（以前は使えない古い合言葉が画面に残った）
+    if (error) return fail(`LINE とのつながりは外しましたが、新しい合言葉を作れませんでした（${dbError(error)}）。「合言葉を作り直す」を押してください`);
     return ok('LINE とのつながりを外しました。もう一度つなぐには、新しい合言葉を渡してください');
   });
 }

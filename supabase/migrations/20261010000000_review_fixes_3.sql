@@ -11,6 +11,7 @@
 -- 9. 端末への通知：「通知しない時間」で待たせた通知が毎回先頭に来て、ほかの人の通知が送れなくなった。送れなかった通知を送り直さなかった
 -- 10. Stripe の知らせ：処理の途中で関数が切られると「処理済み」のまま残り、Stripe の再送を捨てていた
 -- 11. 役割の変更：生徒 ⇔ 講師・運営 を変えると、生徒の行（students）が無い生徒・生徒の行が残った講師ができた
+-- 12. 目次を直すと、途中の行を消したときに後ろの範囲の記録が別の章にずれた（行の位置で合わせていた）
 
 -- ---------- 1. 主担当はいつも1人 ----------
 create or replace function private.keep_main_coach() returns trigger
@@ -330,6 +331,46 @@ begin
   new.updated_at := now();
   return new;
 end $$;
+
+-- ---------- 12. 目次を直すときは、行の位置ではなく範囲の ID で合わせる ----------
+-- 以前はアプリが「i 行目 → i 番目の範囲」で名前を書き換えていた。途中の行を1つ消すと、後ろの範囲の名前が1つずつずれ、
+-- その範囲の予定・小テスト・再テストの記録が別の章を指すようになった（使っていない最後の範囲だけが消えた）。
+-- p_units：[{ "id": 既存の範囲の ID（新しい行は無し）, "label": 名前 }, …] を新しい順番で。名前を変えても ID が同じなら記録はそのまま
+create function public.save_material_units(p_material uuid, p_units jsonb) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  m public.materials;
+  n int := coalesce(jsonb_array_length(p_units), 0);
+begin
+  select * into m from public.materials where id = p_material;
+  if m.id is null or not (private.is_school_admin() and m.school_id = private.my_school()) then
+    raise exception '教材が見つかりません' using errcode = '42501';
+  end if;
+  if n < 1 or n > 500 then raise exception '範囲は1〜500行で入れてください' using errcode = '22023'; end if;
+  if exists (select 1 from jsonb_array_elements(p_units) e where length(trim(coalesce(e->>'label', ''))) not between 1 and 120) then
+    raise exception '範囲の名前は1〜120文字で入れてください' using errcode = '22023';
+  end if;
+  if exists (select 1 from jsonb_array_elements(p_units) e where e->>'id' is not null
+       and not exists (select 1 from public.material_units u where u.id = (e->>'id')::uuid and u.material_id = p_material))
+     or (select count(*) from jsonb_array_elements(p_units) e where e->>'id' is not null)
+        <> (select count(distinct e->>'id') from jsonb_array_elements(p_units) e where e->>'id' is not null) then
+    raise exception '範囲が見つかりません。画面を読み直してください' using errcode = '22023';
+  end if;
+  begin
+    delete from public.material_units u where u.material_id = p_material
+      and u.id not in (select (e->>'id')::uuid from jsonb_array_elements(p_units) e where e->>'id' is not null);
+  exception when foreign_key_violation then
+    raise exception '予定や小テストで使っている範囲は、行を消せません（名前と順番は直せます）' using errcode = '23503';
+  end;
+  set constraints public.material_units_material_id_seq_key deferred;
+  update public.material_units u set seq = x.ord, label = trim(x.label)
+    from (select (e->>'id')::uuid as id, e->>'label' as label, ord::int from jsonb_array_elements(p_units) with ordinality t(e, ord)) x
+    where u.id = x.id and x.id is not null;
+  insert into public.material_units (school_id, material_id, seq, label)
+    select m.school_id, p_material, ord::int, trim(e->>'label') from jsonb_array_elements(p_units) with ordinality t(e, ord) where e->>'id' is null;
+end $$;
+revoke all on function public.save_material_units(uuid, jsonb) from public, anon;
+grant execute on function public.save_material_units(uuid, jsonb) to authenticated, service_role;
 
 revoke all on function private.deadline_today(uuid), private.guard_done_task_delete() from public, anon;
 grant execute on function private.deadline_today(uuid), private.guard_done_task_delete() to authenticated, service_role;

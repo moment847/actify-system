@@ -82,3 +82,16 @@ describe('一括登録の検査', () => {
     expect(p.problems[0].text).toContain('500人まで');
   });
 });
+
+describe('一括登録の 2026-10 の直し', () => {
+  const coaches: CoachRef[] = [{ id: 'c1', name: '佐藤 健', email: 'sato@x.jp' }, { id: 'c2', name: 'ジョン・スミス', email: 'john@x.jp' }, { id: 'c3', name: '中村 葵', email: 'naka@x.jp' }];
+  it('名前に「・」が入る講師も副担当にできる。「・」で並べた2人も読める', () => {
+    const p = previewImport('名前,メール,担当講師,副担当\nA,a@x.jp,佐藤 健,ジョン・スミス\nB,b@x.jp,佐藤 健,中村 葵・ジョン・スミス\n', coaches);
+    expect(p.problems).toEqual([]);
+    expect(p.rows[0].subCoachIds).toEqual(['c2']);
+  });
+  it('問題の行番号はファイルの行番号（空の行・セルの中の改行も数える）', () => {
+    const p = previewImport('名前,メール\nA,a@x.jp\n\n"B\nB",bad\n\nC,\n', coaches);
+    expect(p.problems.map(x => x.line)).toEqual([4, 7]);
+  });
+});

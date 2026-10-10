@@ -13,23 +13,28 @@ export function decodeCsv(bytes: Uint8Array): string {
 
 /** RFC 4180 の CSV（"" で囲んだ中のカンマ・改行、"" のエスケープ）。空の行は捨てる */
 export function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [], cell = '', quoted = false;
+  return parseCsvLines(text).map(r => r.cells);
+}
+
+/** 行ごとに、ファイルの何行目から始まるか（空の行・セルの中の改行も数える）。問題の行番号を Excel の行番号とそろえる */
+export function parseCsvLines(text: string): { cells: string[]; line: number }[] {
+  const rows: { cells: string[]; line: number }[] = [];
+  let row: string[] = [], cell = '', quoted = false, line = 1, start = 1;
   const s = text.replace(/^﻿/, '');
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (quoted) {
       if (c === '"') { if (s[i + 1] === '"') { cell += '"'; i++; } else quoted = false; }
-      else cell += c;
+      else { if (c === '\n' || (c === '\r' && s[i + 1] !== '\n')) line++; cell += c; }
     } else if (c === '"' && cell === '') quoted = true;
     else if (c === ',') { row.push(cell); cell = ''; }
     else if (c === '\n' || c === '\r') {
       if (c === '\r' && s[i + 1] === '\n') i++;
-      row.push(cell); rows.push(row); row = []; cell = '';
+      row.push(cell); rows.push({ cells: row, line: start }); row = []; cell = ''; line++; start = line;
     } else cell += c;
   }
-  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
-  return rows.map(r => r.map(x => x.trim())).filter(r => r.some(x => x !== ''));
+  if (cell !== '' || row.length) { row.push(cell); rows.push({ cells: row, line: start }); }
+  return rows.map(r => ({ cells: r.cells.map(x => x.trim()), line: r.line })).filter(r => r.cells.some(x => x !== ''));
 }
 
 export type ImportField = 'name' | 'email' | 'grade' | 'goalSchool' | 'goalFaculty' | 'examOn' | 'mainCoach' | 'subCoaches' | 'guardianName' | 'guardianRelation';
@@ -80,6 +85,17 @@ function findCoach(s: string, coaches: CoachRef[]): CoachRef | 'ambiguous' | nul
   return byName.length === 1 ? byName[0] : byName.length > 1 ? 'ambiguous' : null;
 }
 
+/** 「中村 葵・ジョン・スミス」：つながる部分をできるだけ長く取って講師に当てる（ジョン・スミス を1人として読む） */
+function splitDots(s: string, coaches: CoachRef[]): string[] {
+  const parts = s.split('・').map(x => x.trim()).filter(Boolean), out: string[] = [];
+  for (let i = 0; i < parts.length;) {
+    let j = parts.length;
+    for (; j > i + 1; j--) if (findCoach(parts.slice(i, j).join('・'), coaches)) break;
+    out.push(parts.slice(i, j).join('・')); i = j;
+  }
+  return out;
+}
+
 /**
  * CSV を検査して、登録できる行と問題のある行に分ける。
  * - 必須は「名前」「メール」。ほかの列は無くてもよい
@@ -87,7 +103,7 @@ function findCoach(s: string, coaches: CoachRef[]): CoachRef | 'ambiguous' | nul
  * - すでに使われているメール（existingEmails）は「登録済み」として飛ばす（上書きしない）
  */
 export function previewImport(text: string, coaches: CoachRef[], existingEmails: Iterable<string> = []): ImportPreview {
-  const table = parseCsv(text);
+  const lined = parseCsvLines(text), table = lined.map(r => r.cells);
   const head = table[0] ?? [];
   const col: Partial<Record<ImportField, number>> = {}, unknownHeaders: string[] = [];
   head.forEach((h, i) => {
@@ -101,9 +117,9 @@ export function previewImport(text: string, coaches: CoachRef[], existingEmails:
   const existing = new Set([...existingEmails].map(e => e.toLowerCase()));
   const seen = new Set<string>();
   const body = table.slice(1);
-  if (body.length > MAX_IMPORT_ROWS) problems.push({ line: MAX_IMPORT_ROWS + 2, text: `1回に登録できるのは${MAX_IMPORT_ROWS}人までです。${MAX_IMPORT_ROWS + 1}人目からは登録しません` });
+  if (body.length > MAX_IMPORT_ROWS) problems.push({ line: lined[MAX_IMPORT_ROWS + 1].line, text: `1回に登録できるのは${MAX_IMPORT_ROWS}人までです。${MAX_IMPORT_ROWS + 1}人目からは登録しません` });
   body.slice(0, MAX_IMPORT_ROWS).forEach((r, i) => {
-    const line = i + 2; // 見出しが1行目
+    const line = lined[i + 1].line; // ファイルの行番号（空の行・セルの中の改行も数える）
     const get = (f: ImportField) => (col[f] === undefined ? '' : (r[col[f]!] ?? '').normalize('NFKC').trim());
     const why: string[] = [];
     const name = get('name').replace(/\s+/g, ' ');
@@ -129,7 +145,11 @@ export function previewImport(text: string, coaches: CoachRef[], existingEmails:
       else mainCoachId = c.id;
     }
     const subCoachIds: string[] = [];
-    for (const s of get('subCoaches').split(/[、,;／/・]/).map(x => x.trim()).filter(Boolean)) {
+    // 「ジョン・スミス」のように名前に「・」が入るので、まず欄まるごと → 区切り（、,;／/）→ それでも見つからなければ「・」でも分ける
+    const subRaw = get('subCoaches');
+    const pieces = !subRaw ? [] : findCoach(subRaw, coaches) ? [subRaw]
+      : subRaw.split(/[、,;／/]/).map(x => x.trim()).filter(Boolean).flatMap(p => (findCoach(p, coaches) || !p.includes('・') ? [p] : splitDots(p, coaches)));
+    for (const s of pieces) {
       const c = findCoach(s, coaches);
       if (c === 'ambiguous') why.push(`講師「${s}」が2人います。メールアドレスで書いてください`);
       else if (!c) why.push(`副担当「${s}」が見つかりません`);

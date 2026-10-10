@@ -13,7 +13,7 @@ import { matchPdfName, parseFreeEntry } from '@/lib/domain/text-match';
 import { mergeSlot } from '@/lib/domain/slots';
 import { pathIn } from '@/lib/domain/paths';
 import { VAGUE, type Task, type World } from '@/lib/domain/types';
-import { loadStudents, loadWorld, type Actor } from '@/lib/data/load';
+import { loadStudents, loadWorld, mainStudentIds, studentToday, type Actor } from '@/lib/data/load';
 import { changed, dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
 
 const STAFF = ['coach', 'admin'] as const;
@@ -128,7 +128,10 @@ export async function deleteTask(input: { id: string; repack?: boolean }): Promi
     if (v.repack) {
       w.tasks = w.tasks.filter(t => t.id !== v.id);
       const b = blockAt(w, cur.student_id, cur.on_date, toMin(cur.start_time.slice(0, 5)));
-      if (b) for (const m of repack(w, cur.student_id, b)) await sb.from('tasks').update({ start_time: m.time }).eq('id', m.id);
+      if (b) {
+        const err = await moveAll(sb, repack(w, cur.student_id, b));
+        if (err) { done(); return fail(`「${label}」は外しましたが、後ろを詰められませんでした（${err}）。画面を読み直してください`); }
+      }
     }
     done();
     return ok(`「${label}」を外しました${v.repack ? '（後ろは詰めました）' : '（小テストの版は空きに戻りました）'}`);
@@ -148,9 +151,9 @@ export async function adjustTaskDuration(input: { id: string; delta: number }): 
     const bad = changed(await sb.from('tasks').update({ duration_min: t.duration }, { count: 'exact' }).eq('id', v.id), '予定が見つかりません');
     if (bad) return fail(bad);
     const b = blockAt(w, cur.student_id, cur.on_date, toMin(cur.start_time.slice(0, 5)));
-    if (b) for (const m of repack(w, cur.student_id, b)) await sb.from('tasks').update({ start_time: m.time }).eq('id', m.id);
+    const err = b ? await moveAll(sb, repack(w, cur.student_id, b)) : null;
     done();
-    return ok();
+    return err ? fail(`長さは変えましたが、まとまりの中を詰め直せませんでした（${err}）。画面を読み直してください`) : ok();
   });
 }
 
@@ -196,17 +199,31 @@ export async function fillWeekWithRecommendations(input: { studentId: string; we
   });
 }
 
+/** まとまりの中を詰めた結果を書く。失敗した（重なり・同時の編集）ら、その理由を返す（以前は失敗を無視して「詰めました」と言っていた） */
+async function moveAll(sb: SupabaseClient, moves: { id: string; time: string }[]): Promise<string | null> {
+  for (const m of moves) {
+    const { error } = await sb.from('tasks').update({ start_time: m.time }).eq('id', m.id);
+    if (error) return dbError(error);
+  }
+  return null;
+}
+
 async function insertRecommended(sb: SupabaseClient, actor: Actor, w: World, sid: string, blocks: ReturnType<typeof weekBlocks>): Promise<Result<{ count: number }>> {
+  // 動かす前の位置を覚えておく（新しい予定を入れられなかったら、動かした予定を元に戻す）
+  const before = new Map(w.tasks.filter(t => t.studentId === sid).map(t => [t.id, { on_date: t.date, start_time: t.time, duration_min: t.duration }]));
   const put = blocks.flatMap(b => recommendFill(w, sid, b, tmpId));
   if (!put.length) return ok('入れられるおすすめがありません', { count: 0 });
   const moved = put.filter(t => !t.id.startsWith('tmp-')), fresh = put.filter(t => t.id.startsWith('tmp-'));
+  const undo = async (ids: string[]) => { for (const id of ids.reverse()) { const b = before.get(id); if (b) await sb.from('tasks').update(b).eq('id', id); } };
+  const done_: string[] = [];
   for (const t of moved) {
     const { error } = await sb.from('tasks').update({ on_date: t.date, start_time: t.time, duration_min: t.duration }).eq('id', t.id);
-    if (error) return fail(dbError(error));
+    if (error) { await undo(done_); return fail(dbError(error)); }
+    done_.push(t.id);
   }
   if (fresh.length) {
     const { error } = await sb.from('tasks').insert(fresh.map(t => ({ student_id: sid, on_date: t.date, start_time: t.time, duration_min: t.duration, material_id: t.materialId, unit_id: t.unitId, created_by: actor.id })));
-    if (error) return fail(dbError(error));
+    if (error) { await undo(done_); return fail(dbError(error)); }
   }
   const lack = put.filter(t => !t.quizVersionId && t.unitId && needsPdf(w, t.unitId)).length;
   done();
@@ -279,7 +296,8 @@ export async function setBook(input: { studentId: string; materialId: string; ta
       done(); return ok('参考書を外しました');
     }
     const { data: cur } = await sb.from('student_books').select('start_on').eq('student_id', v.studentId).eq('material_id', v.materialId).maybeSingle();
-    const { error } = await sb.from('student_books').upsert({ student_id: v.studentId, material_id: v.materialId, start_on: cur?.start_on ?? actor.today, target_on: v.target ?? dateAdd(actor.today, 90) });
+    const today = (await studentToday(sb, v.studentId)) ?? actor.today;   // 始めた日は生徒の暦
+    const { error } = await sb.from('student_books').upsert({ student_id: v.studentId, material_id: v.materialId, start_on: cur?.start_on ?? today, target_on: v.target ?? dateAdd(today, 90) });
     if (error) return fail(dbError(error));
     done();
     return ok(cur ? '目標日を保存しました' : '参考書を追加しました。目標日を決めてください');
@@ -355,14 +373,17 @@ export async function setBookingSettings(input: { length?: 20 | 30 | 45 | 60; pu
 export async function autoBookMeetings(weekStartDate: string): Promise<Result<{ count: number }>> {
   return withActor(['coach'], async ({ sb, actor }) => {
     const start = zDate.parse(weekStartDate);
-    const students = await loadStudents(sb, actor);
+    if (dow(start) !== 0) return fail('週の始まり（月曜）を指定してください');
+    // 面談は主担当と。副担当の生徒をまとめて入れると、主担当の面談を入れ替えてしまう（DB でも断る）
+    const mains = await mainStudentIds(sb, actor.id);
+    const students = (await loadStudents(sb, actor)).filter(s => mains.has(s.id));
     const w = await loadWorld(sb, actor, students.map(s => s.id));
     let n = 0;
     for (const s of students) {
       if (meetingInWeek(w, s.id, start)) continue;
       const sl = meetingSlots(w, s.id, start), o = sl.find(x => x.same) || sl.find(x => x.fit) || sl[0];
       if (!o) continue;
-      const { data, error } = await sb.rpc('book_meeting', { p_on_date: o.date, p_start: o.time, p_student: s.id, p_coach: actor.id });
+      const { data, error } = await sb.rpc('book_meeting', { p_on_date: o.date, p_start: o.time, p_student: s.id, p_coach: null });
       if (error) continue;
       w.meetings.push({ id: data as string, studentId: s.id, coachId: actor.id, date: o.date, time: o.time, len: w.meetingLength });
       n++;

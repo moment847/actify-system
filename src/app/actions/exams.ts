@@ -53,6 +53,7 @@ export async function examsOf(studentId?: string): Promise<Result<{ results: Exa
 export async function saveExam(input: z.input<typeof Exam>): Promise<Result<{ id: string }>> {
   return withActor(['student', 'coach', 'admin'], async ({ sb, actor }) => {
     const v = Exam.parse(input);
+    if (new Set(v.subjects.map(s => s.subject)).size !== v.subjects.length) return fail('同じ科目が2回入っています');
     const sid = actor.role === 'student' ? actor.id : v.studentId;
     if (!sid) return fail('生徒を選んでください');
     const mock = v.kind === 'mock';
@@ -65,8 +66,18 @@ export async function saveExam(input: z.input<typeof Exam>): Promise<Result<{ id
     if (id) {
       const bad = changed(await sb.from('exam_results').update(row, { count: 'exact' }).eq('id', id).eq('student_id', sid), '成績が見つかりません');
       if (bad) return fail(bad);
-      const { error } = await sb.from('exam_subject_scores').delete().eq('result_id', id);
+      // 科目は「入れ直してから、無くなった科目を消す」。以前は先に全部消してから入れていて、入れるのに失敗すると科目の点が全部消えた
+      if (v.subjects.length) {
+        const { error } = await sb.from('exam_subject_scores').upsert(v.subjects.map((s, i) => ({ result_id: id, subject: s.subject, score: s.score ?? null, max_score: s.max ?? null, deviation: mock ? s.deviation ?? null : null, seq: i })), { onConflict: 'result_id,subject' });
+        if (error) return fail(dbError(error));
+      }
+      const keep = v.subjects.map(s => s.subject);
+      let del = sb.from('exam_subject_scores').delete().eq('result_id', id);
+      if (keep.length) del = del.not('subject', 'in', `(${keep.map(k => `"${k.replace(/"/g, '""')}"`).join(',')})`);
+      const { error } = await del;
       if (error) return fail(dbError(error));
+      done();
+      return ok('保存しました', { id: id! });
     } else {
       const { data, error } = await sb.from('exam_results').insert({ ...row, student_id: sid }).select('id').single();
       if (error) return fail(dbError(error));

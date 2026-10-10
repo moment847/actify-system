@@ -17,20 +17,21 @@ import { dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/
 
 const done = () => revalidatePath('/', 'layout');
 
-async function rpc(name: string, args: Record<string, unknown>, message: string): Promise<Result> {
+async function rpc(name: string, arg: string, id: string, message: string): Promise<Result> {
   return withActor(['student', 'coach', 'admin'], async ({ sb }) => {
-    const { error } = await sb.rpc(name, args);
+    // 入力の形は withActor の中で確かめる（外で parse すると、形の誤りが Result ではなく例外になる）
+    const { error } = await sb.rpc(name, { [arg]: zId.parse(id) });
     if (error) return fail(dbError(error));
     done();
     return ok(message);
   });
 }
 
-export async function startTask(id: string) { return rpc('start_task', { p_task: zId.parse(id) }, 'タイマーを始めました'); }
-export async function pauseTask(id: string) { return rpc('pause_task', { p_task: zId.parse(id) }, '一時停止しました'); }
-export async function resumeTask(id: string) { return rpc('resume_task', { p_task: zId.parse(id) }, '再開しました'); }
-export async function stopTaskTimer(id: string) { return rpc('stop_task_timer', { p_task: zId.parse(id) }, 'タイマーをやめました（記録はしていません）'); }
-export async function reopenTask(id: string) { return rpc('reopen_task', { p_task: zId.parse(id) }, '未完了に戻しました'); }
+export async function startTask(id: string) { return rpc('start_task', 'p_task', id, 'タイマーを始めました'); }
+export async function pauseTask(id: string) { return rpc('pause_task', 'p_task', id, '一時停止しました'); }
+export async function resumeTask(id: string) { return rpc('resume_task', 'p_task', id, '再開しました'); }
+export async function stopTaskTimer(id: string) { return rpc('stop_task_timer', 'p_task', id, 'タイマーをやめました（記録はしていません）'); }
+export async function reopenTask(id: string) { return rpc('reopen_task', 'p_task', id, '未完了に戻しました'); }
 
 /** 完了（点数・ひとこと）。完了済みなら点数とひとことを直す */
 export async function completeTask(input: { id: string; score?: number | null; tag?: FeedbackTag | null; body?: string }): Promise<Result> {
@@ -67,12 +68,8 @@ export async function fillBuffer(id: string): Promise<Result> {
 export async function bookMeeting(input: { date: string; time: string; studentId?: string }): Promise<Result<{ id: string }>> {
   return withActor(['student', 'coach', 'admin'], async ({ sb, actor }) => {
     const v = z.object({ date: zDate, time: zTime, studentId: zId.optional() }).parse(input);
-    const sid = actor.role === 'student' ? actor.id : v.studentId;
-    // 講師が予約するなら自分、それ以外は主担当の講師（副担当の講師の枠には入れない）
-    const coach = actor.role === 'coach' ? actor.id : sid
-      ? (await sb.from('coach_assignments').select('coach_id').eq('student_id', sid).order('is_main', { ascending: false }).order('created_at').limit(1).maybeSingle()).data?.coach_id ?? null
-      : null;
-    const { data, error } = await sb.rpc('book_meeting', { p_on_date: v.date, p_start: v.time, p_student: actor.role === 'student' ? null : v.studentId ?? null, p_coach: coach });
+    // 面談はいつも主担当と（DB の book_meeting が主担当を選び、副担当からの予約は断る）
+    const { data, error } = await sb.rpc('book_meeting', { p_on_date: v.date, p_start: v.time, p_student: actor.role === 'student' ? null : v.studentId ?? null, p_coach: null });
     if (error) return fail(dbError(error));
     done();
     const { data: m } = await sb.from('meetings').select('length_min').eq('id', data as string).maybeSingle();
@@ -81,16 +78,18 @@ export async function bookMeeting(input: { date: string; time: string; studentId
   });
 }
 
-export async function cancelMeeting(id: string) { return rpc('cancel_meeting', { p_meeting: zId.parse(id) }, '予約を取り消しました'); }
+export async function cancelMeeting(id: string) { return rpc('cancel_meeting', 'p_meeting', id, '予約を取り消しました'); }
 
 // ---------- ファイル（期限つきのURL） ----------
 /** 予定に付いた小テストの問題・解答を開く。その予定が見えるか（RLS）を確かめ、版のパスがその塾のフォルダの中かも確かめてから、サーバがURLを作る */
 export async function openQuizFile(input: { taskId: string; which: 'problem' | 'answer' }): Promise<Result<{ url: string }>> {
   return withActor(['student', 'coach', 'admin'], async ({ sb, actor }) => {
     const v = z.object({ taskId: zId, which: z.enum(['problem', 'answer']) }).parse(input);
-    const { data: t } = await sb.from('tasks').select('quiz_version_id, school_id').eq('id', v.taskId).maybeSingle();
+    const { data: t } = await sb.from('tasks').select('quiz_version_id, school_id, on_date, status, started_at').eq('id', v.taskId).maybeSingle();
     if (!t?.quiz_version_id) return fail('この予定に小テストは付いていません');
     if (t.school_id !== actor.schoolId) return fail('小テストが見つかりません');
+    // 生徒は、今日までの予定・始めた予定・終わった予定の小テストだけ開ける（先の再テストの解答を先に見られないように）
+    if (actor.role === 'student' && t.status !== 'done' && !t.started_at && t.on_date > actor.today) return fail('この小テストは予定の日から開けます');
     const { data: q } = await createAdminClient().from('quiz_versions').select('school_id, problem_path, answer_path').eq('id', t.quiz_version_id).maybeSingle();
     if (!q || q.school_id !== actor.schoolId) return fail('小テストが見つかりません');
     const url = await signedUrlInSchool('quiz-pdfs', v.which === 'problem' ? q.problem_path : q.answer_path, actor.schoolId);

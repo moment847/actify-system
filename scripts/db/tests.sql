@@ -1194,4 +1194,32 @@ end $$;
 reset role;
 rollback;
 
+-- T54：目次は範囲の ID で合わせる。途中の行を消しても、ほかの範囲の記録はずれない。使っている範囲は消せない
+begin;
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+do $$
+declare mid uuid; u uuid[]; used uuid; lbl text;
+begin
+  insert into public.materials (name, short_name, subject, kind) values ('目次テスト', '目次', 'english', 'input') returning id into mid;
+  perform public.save_material_units(mid, '[{"label":"A"},{"label":"B"},{"label":"C"}]'::jsonb);
+  select array_agg(id order by seq) into u from public.material_units where material_id = mid;
+  -- B を消して、C を先頭に、D を足す
+  perform public.save_material_units(mid, jsonb_build_array(jsonb_build_object('id', u[3], 'label', 'C'), jsonb_build_object('id', u[1], 'label', 'A2'), jsonb_build_object('label', 'D')));
+  if (select string_agg(label, ',' order by seq) from public.material_units where material_id = mid) <> 'C,A2,D' then raise exception 'T54 FAILED: order/labels'; end if;
+  select label into lbl from public.material_units where id = u[1];
+  if lbl <> 'A2' then raise exception 'T54 FAILED: id did not keep its row'; end if;
+  -- 使っている範囲は消せない
+  insert into public.tasks (student_id, on_date, start_time, duration_min, material_id, unit_id)
+    values (current_setting('test.hina')::uuid, private.local_today(current_setting('test.hina')::uuid) + 3, '05:00', 30, mid, u[3]);
+  begin
+    perform public.save_material_units(mid, jsonb_build_array(jsonb_build_object('id', u[1], 'label', 'A2')));
+    raise exception 'T54 FAILED: removed a used unit';
+  exception when foreign_key_violation then null;
+  end;
+  raise notice 'T54 OK: table of contents is saved by unit id';
+end $$;
+reset role;
+rollback;
+
 \echo 'ALL DB TESTS PASSED'

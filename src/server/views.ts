@@ -9,7 +9,7 @@ import {
   taskLabel, tasksOf, typicalDur, unitOf, visibleMats, weekBlocks, weekStats,
 } from '@/lib/domain/plan';
 import type { Task, World } from '@/lib/domain/types';
-import { loadStudents, loadWorld, type Actor } from '@/lib/data/load';
+import { loadStudents, loadWorld, mainStudentIds, readAll, type Actor } from '@/lib/data/load';
 
 type Sb = SupabaseClient;
 
@@ -196,7 +196,9 @@ async function whoView(sb: Sb, w: World, sid: string, s: Awaited<ReturnType<type
 }
 
 export async function coachMeetView(sb: Sb, actor: Actor, weekOffset = 0) {
-  const students = await loadStudents(sb, actor);
+  // 面談は主担当と。副担当の生徒は、この画面の予約の一覧に出さない（主担当の画面で入れる）
+  const mains = await mainStudentIds(sb, actor.id);
+  const students = (await loadStudents(sb, actor)).filter(s => mains.has(s.id));
   const w = await loadWorld(sb, actor, students.map(s => s.id));
   const start = dateAdd(weekStart(w.today), weekOffset * 7), days = weekDays(start);
   const { data: setting } = await sb.from('booking_settings').select('length_min, published').eq('coach_id', actor.id).maybeSingle();
@@ -205,7 +207,7 @@ export async function coachMeetView(sb: Sb, actor: Actor, weekOffset = 0) {
     start, days, today: w.today, length: setting?.length_min ?? 30, published: setting?.published ?? true,
     open: days.flatMap(d => coachOpenOn(w, d).map(o => ({ id: o.id, date: d, start: o.start, end: o.end, repeat: o.weekday !== null }))),
     openMinutes: openMin, registered: coachOpenRegistered(w, start), canCopy: coachOpenRegistered(w, dateAdd(start, -7)),
-    meetings: w.meetings.filter(m => days.includes(m.date)).map(m => ({ ...m, name: students.find(s => s.id === m.studentId)?.name ?? '' })),
+    meetings: w.meetings.filter(m => days.includes(m.date) && (!m.coachId || m.coachId === actor.id)).map(m => ({ ...m, name: students.find(s => s.id === m.studentId)?.name ?? '' })),
     rows: students.map(s => {
       const m = meetingInWeek(w, s.id, start), best = m ? null : meetingSlots(w, s.id, start)[0] ?? null, last = lastMeeting(w, s.id);
       return { id: s.id, name: s.name, meeting: m ? { ...m, over: m.date < w.today } : null, best, lastWeek: best?.same && last ? { date: last.date, time: last.time } : null };
@@ -233,11 +235,12 @@ export async function coachPrintsView(sb: Sb, actor: Actor, materialId?: string)
 
 // ---------- 運営 ----------
 export async function adminMaterialsView(sb: Sb) {
-  const [{ data: mats }, { data: units }, { data: qv }, { data: books }] = await Promise.all([
+  // 範囲・版・担当の参考書は1,000行を超える（20冊×50範囲など）ので全部読む。以前は1,000行で切れて数が合わなかった
+  const [{ data: mats }, units, qv, books] = await Promise.all([
     sb.from('materials').select('id, name, short_name, subject, kind, review_intervals, keywords, toc_image_path, archived_at').order('created_at'),
-    sb.from('material_units').select('id, material_id, seq, label').order('seq'),
-    sb.from('quiz_versions').select('unit_id'),
-    sb.from('student_books').select('material_id, student_id'),
+    readAll<{ id: string; material_id: string; seq: number; label: string }>((a, b) => sb.from('material_units').select('id, material_id, seq, label').order('material_id').order('seq').range(a, b)),
+    readAll<{ unit_id: string }>((a, b) => sb.from('quiz_versions').select('unit_id').order('id').range(a, b)),
+    readAll<{ material_id: string; student_id: string }>((a, b) => sb.from('student_books').select('material_id, student_id').order('student_id').order('material_id').range(a, b)),
   ]);
   return (mats ?? []).map(m => {
     const us = (units ?? []).filter(u => u.material_id === m.id);
@@ -248,10 +251,10 @@ export async function adminMaterialsView(sb: Sb) {
 }
 
 export async function adminAccountsView(sb: Sb) {
-  const [{ data: people }, { data: st }, { data: ca }] = await Promise.all([
-    sb.from('profiles').select('id, role, display_name, status, created_at').order('created_at'),
-    sb.from('students').select('id, grade'),
-    sb.from('coach_assignments').select('coach_id, student_id'),
+  const [people, st, ca] = await Promise.all([
+    readAll<{ id: string; role: string; display_name: string; status: string; created_at: string }>((a, b) => sb.from('profiles').select('id, role, display_name, status, created_at').order('created_at').order('id').range(a, b)),
+    readAll<{ id: string; grade: string }>((a, b) => sb.from('students').select('id, grade').order('id').range(a, b)),
+    readAll<{ coach_id: string; student_id: string }>((a, b) => sb.from('coach_assignments').select('coach_id, student_id').order('student_id').order('coach_id').range(a, b)),
   ]);
   return (people ?? []).map(p => ({ id: p.id, name: p.display_name, role: p.role, status: p.status,
     grade: st?.find(s => s.id === p.id)?.grade ?? '',

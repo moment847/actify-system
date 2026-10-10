@@ -33,7 +33,10 @@ export async function loadActor(supabase?: SupabaseClient): Promise<Actor | null
 }
 
 const PAGE = 1000; // PostgREST の max_rows に合わせる
-/** 1,000 行ずつ全部読む */
+/** 1,000 行ずつ全部読む（PostgREST は1回に1,000行まで）。make は必ず .order(...) を付ける（順番が無いとページの境目で行が重なる・抜ける） */
+export async function readAll<T>(make: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
+  return all(make);
+}
 async function all<T>(make: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>): Promise<T[]> {
   const out: T[] = [];
   for (let from = 0; ; from += PAGE) {
@@ -53,6 +56,18 @@ async function all<T>(make: (from: number, to: number) => PromiseLike<{ data: T[
 export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: string[]): Promise<World> {
   if (!studentIds.length) return rowsToWorld(emptyRows(), actor.today, actor.timeZone);
   const staff = actor.role !== 'student';
+  // 予定・やり残し・「今日より後なら入れられる」は生徒の暦で決める（DB の local_today と同じ）。
+  // 講師が東京で生徒がロサンゼルスだと、講師の「今日」では生徒の月曜の予定が火曜の朝にやり残しに見えた。
+  // 読む生徒のタイムゾーンが1つにそろうとき（1人の生徒を見るとき・同じ国の生徒だけのとき）はその暦、ばらばらなら講師の暦
+  let today = actor.today, timeZone = actor.timeZone;
+  if (staff) {
+    const [{ data: ps }, { data: sc }] = await Promise.all([
+      sb.from('profiles').select('timezone').in('id', studentIds.slice(0, 500)),
+      sb.from('schools').select('timezone').eq('id', actor.schoolId).maybeSingle(),
+    ]);
+    const tzs = new Set((ps ?? []).map(p => p.timezone || sc?.timezone || 'Asia/Tokyo'));
+    if (tzs.size === 1) { timeZone = [...tzs][0]; today = localToday(timeZone); }
+  }
   const [materials, units, quizVersions, tasks, slots, books, reviewSkips] = await Promise.all([
     all<Rows['materials'][number]>((a, b) => sb.from('materials').select('id, name, short_name, subject, kind, review_intervals, keywords, archived_at').eq('school_id', actor.schoolId).order('created_at').range(a, b)),
     all<Rows['units'][number]>((a, b) => sb.from('material_units').select('id, material_id, seq, label').eq('school_id', actor.schoolId).order('material_id').order('seq').range(a, b)),
@@ -83,7 +98,13 @@ export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: st
     ]);
     coachOpen = open; meetingLength = setting.data?.length_min ?? 30;
     if (staff) {
-      meetings = await all<Rows['meetings'][number]>((a, b) => sb.from('meetings').select('id, student_id, coach_id, on_date, start_time, length_min').eq('coach_id', coachId).range(a, b));
+      // 自分の面談（ほかの生徒の分も。埋まっている時間）と、見ている生徒の面談（主担当がほかの講師でも）。
+      // 以前は自分の面談だけで、副担当の画面では主担当との面談が見えず、その時間を空きとして案内していた
+      const [mine, theirs] = await Promise.all([
+        all<Rows['meetings'][number]>((a, b) => sb.from('meetings').select('id, student_id, coach_id, on_date, start_time, length_min').eq('coach_id', coachId).order('id').range(a, b)),
+        all<Rows['meetings'][number]>((a, b) => sb.from('meetings').select('id, student_id, coach_id, on_date, start_time, length_min').in('student_id', studentIds).order('id').range(a, b)),
+      ]);
+      meetings = [...new Map([...mine, ...theirs].map(m => [m.id, m])).values()];
     } else {
       const own = await all<Rows['meetings'][number]>((a, b) => sb.from('meetings').select('id, student_id, coach_id, on_date, start_time, length_min').eq('student_id', actor.id).range(a, b));
       const from = new Date(Date.parse(actor.today + 'T12:00:00Z') - 14 * 864e5).toISOString().slice(0, 10);
@@ -94,7 +115,23 @@ export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: st
       meetings = [...own, ...others];
     }
   }
-  return rowsToWorld({ materials, units, quizVersions, tasks, feedback, replies, slots, slotSkips, books, meetings, coachOpen, reviewSkips, meetingLength }, actor.today, actor.timeZone);
+  const w = rowsToWorld({ materials, units, quizVersions, tasks, feedback, replies, slots, slotSkips, books, meetings, coachOpen, reviewSkips, meetingLength }, today, timeZone);
+  w.meetingCoachId = coachId ?? null;
+  return w;
+}
+
+/** 生徒の「今日」（生徒のタイムゾーン、無ければ塾のタイムゾーン。DB の local_today と同じ） */
+export async function studentToday(sb: SupabaseClient, studentId: string): Promise<string | null> {
+  const { data } = await sb.from('profiles').select('timezone, schools(timezone)').eq('id', studentId).maybeSingle();
+  if (!data) return null;
+  const school = (Array.isArray(data.schools) ? data.schools[0] : data.schools) as { timezone: string } | null;
+  return localToday(data.timezone || school?.timezone || 'Asia/Tokyo');
+}
+
+/** 講師が主担当の生徒（面談は主担当と） */
+export async function mainStudentIds(sb: SupabaseClient, coachId: string): Promise<Set<string>> {
+  const { data } = await sb.from('coach_assignments').select('student_id').eq('coach_id', coachId).eq('is_main', true);
+  return new Set((data ?? []).map(r => r.student_id));
 }
 
 export function emptyRows(): Rows {

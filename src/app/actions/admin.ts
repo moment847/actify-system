@@ -104,36 +104,15 @@ export async function updateMaterial(input: { id: string; name: string; short: s
 }
 
 /**
- * 目次を直す（1行＝1範囲。行の順番が範囲の順番）。予定や小テストで使っている範囲は、行を消せない（名前は直せる）。
- * 消せない範囲は DB の外部キーが止める
+ * 目次を直す（1行＝1範囲。行の順番が範囲の順番）。既存の範囲は ID で合わせる（名前を直しても、順番を入れ替えても、記録はその範囲のまま）。
+ * 予定や小テストで使っている範囲は消せない（DB の save_material_units が1つの処理で確かめて書く）。
+ * 以前は「i 行目 → i 番目の範囲」で書き換えていて、途中の行を消すと後ろの範囲の記録が別の章にずれた
  */
-export async function updateMaterialUnits(input: { id: string; lines: string[] }): Promise<Result> {
+export async function updateMaterialUnits(input: { id: string; units: { id?: string; label: string }[] }): Promise<Result> {
   return withActor(['admin'], async ({ sb }) => {
-    const v = z.object({ id: zId, lines: z.array(z.string().trim().min(1).max(120)).min(1).max(500) }).parse(input);
-    const { data: units, error: e1 } = await sb.from('material_units').select('id, seq, label').eq('material_id', v.id).order('seq');
-    if (e1) return fail(dbError(e1));
-    const cur = units ?? [];
-    if (!cur.length) return fail('教材が見つかりません');
-    const removed = cur.slice(v.lines.length);
-    if (removed.length) {
-      const ids = removed.map(u => u.id);
-      const [{ count: usedT }, { count: usedQ }] = await Promise.all([
-        sb.from('tasks').select('id', { count: 'exact', head: true }).in('unit_id', ids),
-        sb.from('quiz_versions').select('id', { count: 'exact', head: true }).in('unit_id', ids),
-      ]);
-      if ((usedT ?? 0) + (usedQ ?? 0) > 0) return fail('予定や小テストで使っている範囲は、行を消せません（名前は直せます）');
-      const { error } = await sb.from('material_units').delete().in('id', ids);
-      if (error) return fail(dbError(error));
-    }
-    for (let i = 0; i < Math.min(cur.length, v.lines.length); i++) {
-      if (cur[i].label === v.lines[i]) continue;
-      const { error } = await sb.from('material_units').update({ label: v.lines[i] }).eq('id', cur[i].id);
-      if (error) return fail(dbError(error));
-    }
-    if (v.lines.length > cur.length) {
-      const { error } = await sb.from('material_units').insert(v.lines.slice(cur.length).map((label, i) => ({ material_id: v.id, seq: cur.length + i + 1, label })));
-      if (error) return fail(dbError(error));
-    }
+    const v = z.object({ id: zId, units: z.array(z.object({ id: zId.optional(), label: z.string().trim().min(1).max(120) })).min(1).max(500) }).parse(input);
+    const { error } = await sb.rpc('save_material_units', { p_material: v.id, p_units: v.units.map(u => (u.id ? { id: u.id, label: u.label } : { label: u.label })) });
+    if (error) return fail(dbError(error));
     done(); return ok('保存しました');
   });
 }
@@ -159,9 +138,15 @@ export async function createAccount(input: z.input<typeof NewAccount>): Promise<
   return withActor(['admin'], async ({ actor }) => {
     const v = NewAccount.parse(input);
     const admin = createAdminClient();
+    // 担当の講師は先に確かめる（以前は見つからない講師を黙って飛ばし、「追加しました」と言っていた）
+    if (v.role === 'student' && v.coachId) {
+      const { data: c } = await admin.from('profiles').select('school_id, role, status').eq('id', v.coachId).maybeSingle();
+      if (!(c?.school_id === actor.schoolId && c.role === 'coach' && c.status === 'active')) return fail('担当の講師が見つかりません');
+    }
     // 招待のメールのリンクは /auth/confirm（token_hash を verifyOtp で確かめる）。メールの文面は supabase/templates/invite.html
     const { data, error } = await admin.auth.admin.inviteUserByEmail(v.email, { redirectTo: `${env.siteUrl()}/account/password` });
-    if (error || !data.user) return fail(error?.message?.includes('already') ? 'このメールアドレスはもう使われています' : '招待のメールを送れませんでした');
+    // 「もう使われています」とは言わない（ほかの塾にそのメールの人がいるかを教えてしまう。一括登録と同じ）
+    if (error || !data.user) return fail('このメールアドレスでは追加できませんでした。別のメールアドレスで試すか、Actify の運営にお問い合わせください');
     const uid = data.user.id;
     const undo = async (why: string) => { await admin.auth.admin.deleteUser(uid); return fail(why); };
     const { error: e1 } = await admin.from('profiles').insert({ id: uid, school_id: actor.schoolId, role: v.role, display_name: v.name });
@@ -169,13 +154,17 @@ export async function createAccount(input: z.input<typeof NewAccount>): Promise<
     if (v.role === 'student') {
       const { error: e2 } = await admin.from('students').insert({ id: uid, school_id: actor.schoolId, grade: v.grade ?? '' });
       if (e2) { await admin.from('profiles').delete().eq('id', uid); return undo(dbError(e2)); }
-      await admin.from('coach_notes').insert({ student_id: uid, school_id: actor.schoolId, memo: '' });
+      const { error: e3 } = await admin.from('coach_notes').insert({ student_id: uid, school_id: actor.schoolId, memo: '' });
+      if (e3) { await admin.from('profiles').delete().eq('id', uid); return undo(dbError(e3)); }
       if (v.coachId) {
-        const { data: c } = await admin.from('profiles').select('school_id, role').eq('id', v.coachId).maybeSingle();
-        if (c?.school_id === actor.schoolId && c.role === 'coach') await admin.from('coach_assignments').insert({ coach_id: v.coachId, student_id: uid, school_id: actor.schoolId });
+        const { error: e4 } = await admin.from('coach_assignments').insert({ coach_id: v.coachId, student_id: uid, school_id: actor.schoolId });
+        if (e4) { await admin.from('profiles').delete().eq('id', uid); return undo(dbError(e4)); }
       }
     }
-    if (v.role === 'coach') await admin.from('booking_settings').insert({ coach_id: uid, school_id: actor.schoolId });
+    if (v.role === 'coach') {
+      const { error: e5 } = await admin.from('booking_settings').insert({ coach_id: uid, school_id: actor.schoolId });
+      if (e5) { await admin.from('profiles').delete().eq('id', uid); return undo(dbError(e5)); }
+    }
     done();
     return ok(`${v.name}さんを追加して、招待のメールを送りました`, { id: uid });
   });
@@ -183,14 +172,22 @@ export async function createAccount(input: z.input<typeof NewAccount>): Promise<
 
 /** 役割と状態（在籍・休会・退会）。自分の役割は変えられない（DB のトリガでも止める） */
 export async function updateAccount(input: { id: string; role?: 'student' | 'coach' | 'admin'; status?: 'active' | 'paused' | 'withdrawn'; name?: string; grade?: string }): Promise<Result> {
-  return withActor(['admin'], async ({ sb }) => {
+  return withActor(['admin'], async ({ sb, actor }) => {
     const v = z.object({ id: zId, role: z.enum(['student', 'coach', 'admin']).optional(), status: z.enum(['active', 'paused', 'withdrawn']).optional(), name: z.string().trim().min(1).max(60).optional(), grade: z.string().trim().max(30).optional() }).parse(input);
     const patch: Record<string, unknown> = {};
-    if (v.role) patch.role = v.role;
+    if (v.role) {
+      // 生徒 ⇔ 講師・運営 は変えられない（生徒の行が片方だけ残る。DB の guard_profile でも止める）
+      const { data: cur } = await sb.from('profiles').select('role').eq('id', v.id).maybeSingle();
+      if (!cur) return fail('アカウントが見つかりません');
+      if (cur.role !== v.role && (cur.role === 'student' || v.role === 'student')) return fail('生徒と講師・運営の間では役割を変えられません。新しいアカウントを作ってください');
+      patch.role = v.role;
+    }
     if (v.status) patch.status = v.status;
     if (v.name) patch.display_name = v.name;
     if (Object.keys(patch).length) { const bad = changed(await sb.from('profiles').update(patch, { count: 'exact' }).eq('id', v.id), 'アカウントが見つかりません'); if (bad) return fail(bad); }
     if (v.grade !== undefined) { const bad = changed(await sb.from('students').update({ grade: v.grade }, { count: 'exact' }).eq('id', v.id), '生徒が見つかりません'); if (bad) return fail(bad); }
+    // 運営 → 講師にしたら、面談の設定の行を作る（無いと面談の受付の設定が保存できない）
+    if (v.role === 'coach') await sb.from('booking_settings').upsert({ coach_id: v.id, school_id: actor.schoolId }, { onConflict: 'coach_id', ignoreDuplicates: true });
     done();
     return ok(v.status === 'withdrawn' ? '退会にしました（講師の担当一覧から外れます）' : '保存しました');
   });
@@ -213,11 +210,15 @@ export async function assignCoach(input: { coachId: string; studentId: string; a
 /** AI の原価（円）。この塾の月ごと・用途ごと */
 export async function aiCostSummary(): Promise<Result<{ month: string; purpose: string; calls: number; costJpy: number; errors: number }[]>> {
   return withActor(['admin'], async ({ sb, actor }) => {
-    const { data, error } = await sb.from('ai_calls').select('purpose, cost_jpy, error, created_at').order('created_at', { ascending: false }).limit(5000);
-    if (error) return fail(dbError(error));
+    // 月の区切りは塾のタイムゾーン（AI の予算 ai_reserve と同じ）。直近12か月を、1,000行ずつ全部読む（limit(5000) は PostgREST が1,000行で切っていた）
+    const { data: sc } = await sb.from('schools').select('timezone').eq('id', actor.schoolId).maybeSingle();
+    const tz = sc?.timezone || 'Asia/Tokyo';
+    const since = new Date(Date.now() - 366 * 864e5).toISOString();
+    const data = await pages<{ purpose: string; cost_jpy: number; error: string | null; created_at: string }>((a, b) =>
+      sb.from('ai_calls').select('purpose, cost_jpy, error, created_at').gte('created_at', since).order('created_at', { ascending: false }).order('id').range(a, b));
     const m = new Map<string, { month: string; purpose: string; calls: number; costJpy: number; errors: number }>();
-    for (const r of data ?? []) {
-      const month = new Intl.DateTimeFormat('en-CA', { timeZone: actor.timeZone, year: 'numeric', month: '2-digit' }).format(new Date(r.created_at));
+    for (const r of data) {
+      const month = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit' }).format(new Date(r.created_at));
       const k = month + r.purpose, x = m.get(k) ?? { month, purpose: r.purpose, calls: 0, costJpy: 0, errors: 0 };
       x.calls++; x.costJpy += r.cost_jpy; if (r.error) x.errors++; m.set(k, x);
     }
@@ -276,23 +277,31 @@ export async function schoolMetricsView(): Promise<Result<SchoolMetrics>> {
   return withActor(['admin'], async ({ sb, actor }) => {
     const since = dateAdd(weekStart(actor.today), -7 * 8);
     const sinceTs = new Date(Date.parse(since + 'T00:00:00Z') - 864e5).toISOString();
-    const [{ data: people }, { data: ca }, tasks, feedback, replies] = await Promise.all([
-      sb.from('profiles').select('id, role, display_name, status, created_at, timezone').in('role', ['student', 'coach']).eq('status', 'active'),
-      sb.from('coach_assignments').select('coach_id, student_id, is_main'),
-      pages<{ student_id: string; on_date: string }>((a, b) => sb.from('tasks').select('student_id, on_date').eq('status', 'done').gte('on_date', since).range(a, b)),
-      pages<{ task_id: string; student_id: string; created_at: string }>((a, b) => sb.from('task_feedback').select('task_id, student_id, created_at').gte('created_at', sinceTs).range(a, b)),
-      pages<{ task_id: string; coach_id: string | null; created_at: string }>((a, b) => sb.from('task_replies').select('task_id, coach_id, created_at').gte('created_at', sinceTs).range(a, b)),
+    // どれも1,000行ずつ、決まった順番で全部読む（順番が無いと、ページの境目で行が重なったり抜けたりする）
+    const [people, ca, tasks, feedback, replies] = await Promise.all([
+      pages<{ id: string; role: string; display_name: string; status: string; created_at: string; timezone: string | null }>((a, b) =>
+        sb.from('profiles').select('id, role, display_name, status, created_at, timezone').in('role', ['student', 'coach']).eq('status', 'active').order('id').range(a, b)),
+      pages<{ coach_id: string; student_id: string; is_main: boolean }>((a, b) => sb.from('coach_assignments').select('coach_id, student_id, is_main').order('student_id').order('coach_id').range(a, b)),
+      pages<{ student_id: string; on_date: string }>((a, b) => sb.from('tasks').select('student_id, on_date').eq('status', 'done').gte('on_date', since).order('id').range(a, b)),
+      pages<{ task_id: string; student_id: string; created_at: string }>((a, b) => sb.from('task_feedback').select('task_id, student_id, created_at').gte('created_at', sinceTs).order('task_id').range(a, b)),
+      pages<{ task_id: string; coach_id: string | null; created_at: string }>((a, b) => sb.from('task_replies').select('task_id, coach_id, created_at').gte('created_at', sinceTs).order('task_id').range(a, b)),
     ]);
-    const students = (people ?? []).filter(p => p.role === 'student').map(p => ({
+    const students = people.filter(p => p.role === 'student').map(p => ({
       id: p.id, name: p.display_name, joinedOn: localToday(p.timezone || actor.timeZone, new Date(p.created_at)),
-      coachIds: (ca ?? []).filter(a => a.student_id === p.id).map(a => a.coach_id),
-      mainCoachId: (ca ?? []).find(a => a.student_id === p.id && a.is_main)?.coach_id ?? null,
+      coachIds: ca.filter(a => a.student_id === p.id).map(a => a.coach_id),
+      mainCoachId: ca.find(a => a.student_id === p.id && a.is_main)?.coach_id ?? null,
     }));
     const doneDates = new Map<string, string[]>();
     tasks.forEach(t => doneDates.set(t.student_id, [...(doneDates.get(t.student_id) ?? []), t.on_date]));
+    // 8週より前に止まった生徒は、最後の記録の日を別に読む（読まないと「まだ記録がない」に見える）
+    const quiet = students.filter(s => !doneDates.has(s.id));
+    for (let i = 0; i < quiet.length; i += 20) await Promise.all(quiet.slice(i, i + 20).map(async s => {
+      const { data } = await sb.from('tasks').select('on_date').eq('student_id', s.id).eq('status', 'done').order('on_date', { ascending: false }).limit(1).maybeSingle();
+      if (data) doneDates.set(s.id, [data.on_date]);
+    }));
     return ok(undefined, schoolMetrics({
       today: actor.today, now: new Date(), students,
-      coaches: (people ?? []).filter(p => p.role === 'coach').map(p => ({ id: p.id, name: p.display_name })),
+      coaches: people.filter(p => p.role === 'coach').map(p => ({ id: p.id, name: p.display_name })),
       doneDates,
       feedback: feedback.map(f => ({ taskId: f.task_id, studentId: f.student_id, at: f.created_at })),
       replies: replies.map(r => ({ taskId: r.task_id, coachId: r.coach_id, at: r.created_at })),
