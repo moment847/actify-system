@@ -73,7 +73,8 @@ export async function saveExam(input: z.input<typeof Exam>): Promise<Result<{ id
       }
       const keep = v.subjects.map(s => s.subject);
       let del = sb.from('exam_subject_scores').delete().eq('result_id', id);
-      if (keep.length) del = del.not('subject', 'in', `(${keep.map(k => `"${k.replace(/"/g, '""')}"`).join(',')})`);
+      // PostgREST の in の値は "…" で囲み、中の \ と " は \ で逃がす
+      if (keep.length) del = del.not('subject', 'in', `(${keep.map(k => `"${k.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')})`);
       const { error } = await del;
       if (error) return fail(dbError(error));
       done();

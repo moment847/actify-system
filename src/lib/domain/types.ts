@@ -117,6 +117,8 @@ export interface World {
   meetingLength: number;
   /** coachOpen（面談できる時間）の講師。ほかの講師の面談は、この講師の埋まっている時間に数えない */
   meetingCoachId?: string | null;
+  /** 面談の「前日まで」に使う今日（タイムゾーンを変えた直後は塾の暦の方が遅いことがある。無ければ today） */
+  bookingToday?: DateStr;
   /** 講師が見送った再テスト：`rv:${studentId}:${unitId}:${回数}` */
   reviewSkips: Set<string>;
 }

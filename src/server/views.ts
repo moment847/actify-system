@@ -74,7 +74,7 @@ export async function studentScheduleView(sb: Sb, actor: Actor, weekOffset = 0) 
 function meetingCard(w: World, sid: string, start: string) {
   const m = meetingInWeek(w, sid, start);
   if (start < weekStart(w.today)) return { state: m ? 'past' as const : 'none' as const, meeting: m };
-  if (m) return { state: 'booked' as const, meeting: m, canChange: m.date > w.today, over: m.date < w.today };
+  if (m) return { state: 'booked' as const, meeting: m, canChange: m.date > (w.bookingToday ?? w.today), over: m.date < w.today };
   const slots = meetingSlots(w, sid, start);
   if (!slots.length) return { state: 'unavailable' as const, reason: weekDays(start).some(d => d > w.today) ? '予約できる時間がもうありません' : '予約は前日までです' };
   return { state: 'open' as const, best: slots[0], others: slots.slice(1), length: w.meetingLength };

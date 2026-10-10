@@ -1127,6 +1127,15 @@ begin
   raise notice 'T50 OK: meeting deadline and main coach';
 end $$;
 reset role;
+-- 海外に住んでいてタイムゾーンを前から変えている生徒は、生徒の暦の「前日まで」のまま（いつも塾の暦にすると2日前までになる）
+reset request.jwt.claim.sub;
+update public.profiles set timezone_changed_at = now() - interval '10 days' where id = :'hina';
+do $$
+begin
+  if private.deadline_today(current_setting('test.hina')::uuid) <> private.local_today(current_setting('test.hina')::uuid) then
+    raise exception 'T50 FAILED: settled overseas student gets the school deadline';
+  end if;
+end $$;
 rollback;
 
 -- T51：退会した生徒は AI 相談を読めない・ひとことを書き換えられない。退会した講師は面談の枠を作れない・面談を読めない

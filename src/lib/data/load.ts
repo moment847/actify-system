@@ -15,6 +15,23 @@ export interface Actor {
   timeZone: string;
   /** その人の「今日」（本人のタイムゾーン） */
   today: string;
+  /** 塾のタイムゾーン（タイムゾーンを変えた直後の締め切りに使う） */
+  schoolTimeZone?: string;
+  /** 本人がタイムゾーンを最後に変えた時刻（DB が付ける） */
+  tzChangedAt?: string | null;
+}
+
+/** タイムゾーンを変えてからこの間は、締め切りを塾の暦でも確かめる（DB の deadline_today と同じ 2 日） */
+export const RECENT_TZ_CHANGE_MS = 2 * 864e5;
+/**
+ * 締め切りに使う「今日」。ふだんは本人の今日。タイムゾーンを変えた直後だけ、本人と塾の暦の
+ * 'later'：遅い方（面談の「前日まで」。西へ変えて当日をすり抜けられないように）
+ * 'earlier'：早い方（小テストを開ける日。東へ変えて翌日の解答を先に開けないように）
+ */
+export function guardedToday(actor: Actor, side: 'later' | 'earlier', now = new Date()): string {
+  if (!actor.tzChangedAt || !actor.schoolTimeZone || now.getTime() - Date.parse(actor.tzChangedAt) > RECENT_TZ_CHANGE_MS) return actor.today;
+  const school = localToday(actor.schoolTimeZone, now), mine = localToday(actor.timeZone, now);
+  return side === 'later' ? (school > mine ? school : mine) : (school < mine ? school : mine);
 }
 
 /** ログインしている人。ログインしていない・休会中・退会・プロフィールが無いときは null（休会中は請求に数えないので使えない。DB の my_role も同じ） */
@@ -24,12 +41,13 @@ export async function loadActor(supabase?: SupabaseClient): Promise<Actor | null
   const uid = claims?.claims?.sub as string | undefined;
   if (!uid) return null;
   const { data: p } = await sb.from('profiles')
-    .select('id, school_id, role, display_name, status, timezone, schools(name, timezone)')
+    .select('id, school_id, role, display_name, status, timezone, timezone_changed_at, schools(name, timezone)')
     .eq('id', uid).maybeSingle();
   if (!p || p.status !== 'active') return null;
   const school = (Array.isArray(p.schools) ? p.schools[0] : p.schools) as { name: string; timezone: string } | null;
   const timeZone = p.timezone || school?.timezone || 'Asia/Tokyo';
-  return { id: p.id, schoolId: p.school_id, schoolName: school?.name ?? '', role: p.role as Role, name: p.display_name, timeZone, today: localToday(timeZone) };
+  return { id: p.id, schoolId: p.school_id, schoolName: school?.name ?? '', role: p.role as Role, name: p.display_name, timeZone, today: localToday(timeZone),
+    schoolTimeZone: school?.timezone || 'Asia/Tokyo', tzChangedAt: p.timezone_changed_at ?? null };
 }
 
 const PAGE = 1000; // PostgREST の max_rows に合わせる
@@ -61,11 +79,12 @@ export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: st
   // 読む生徒のタイムゾーンが1つにそろうとき（1人の生徒を見るとき・同じ国の生徒だけのとき）はその暦、ばらばらなら講師の暦
   let today = actor.today, timeZone = actor.timeZone;
   if (staff) {
-    const [{ data: ps }, { data: sc }] = await Promise.all([
-      sb.from('profiles').select('timezone').in('id', studentIds.slice(0, 500)),
+    const chunks300 = Array.from({ length: Math.ceil(studentIds.length / 300) }, (_, i) => studentIds.slice(i * 300, i * 300 + 300));
+    const [ps, { data: sc }] = await Promise.all([
+      Promise.all(chunks300.map(c => sb.from('profiles').select('timezone').in('id', c).then(r => r.data ?? []))).then(x => x.flat()),
       sb.from('schools').select('timezone').eq('id', actor.schoolId).maybeSingle(),
     ]);
-    const tzs = new Set((ps ?? []).map(p => p.timezone || sc?.timezone || 'Asia/Tokyo'));
+    const tzs = new Set(ps.map(p => p.timezone || sc?.timezone || 'Asia/Tokyo'));
     if (tzs.size === 1) { timeZone = [...tzs][0]; today = localToday(timeZone); }
   }
   const [materials, units, quizVersions, tasks, slots, books, reviewSkips] = await Promise.all([
@@ -117,6 +136,7 @@ export async function loadWorld(sb: SupabaseClient, actor: Actor, studentIds: st
   }
   const w = rowsToWorld({ materials, units, quizVersions, tasks, feedback, replies, slots, slotSkips, books, meetings, coachOpen, reviewSkips, meetingLength }, today, timeZone);
   w.meetingCoachId = coachId ?? null;
+  if (!staff) w.bookingToday = guardedToday(actor, 'later');   // 予約・取り消しの「前日まで」は DB の deadline_today と同じ日で見せる
   return w;
 }
 

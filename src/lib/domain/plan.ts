@@ -170,7 +170,7 @@ export const nextMeeting = (w: World, sid: string, from: DateStr = w.today) =>
 export const lastMeeting = (w: World, sid: string) =>
   w.meetings.filter(m => m.studentId === sid && m.date < w.today).sort((a, b) => b.date.localeCompare(a.date))[0] || null;
 /** 予約は前日まで（当日は予約できない） */
-export const canBook = (w: World, date: DateStr) => date > w.today;
+export const canBook = (w: World, date: DateStr) => date > (w.bookingToday ?? w.today);
 export const coachOpenOn = (w: World, d: DateStr) =>
   w.coachOpen.filter(o => (o.weekday !== null ? o.weekday === dow(d) : o.date === d)).sort((a, b) => a.start.localeCompare(b.start));
 export const coachOpenRegistered = (w: World, start: DateStr) => weekDays(start).some(d => coachOpenOn(w, d).length > 0);

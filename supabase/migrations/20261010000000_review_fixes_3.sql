@@ -89,12 +89,26 @@ drop trigger stamp_actor on public.task_replies;
 create trigger stamp_actor before insert or update on public.task_replies for each row execute function private.stamp_actor();
 create trigger stamp_actor before insert or update on public.task_feedback for each row execute function private.stamp_actor();
 
--- ---------- 5. 面談：主担当と・締め切りは塾の暦でも確かめる ----------
--- 「今日」は生徒のタイムゾーンと塾のタイムゾーンの遅い方。生徒は自分のタイムゾーンを変えられる（留学など）ので、
--- 西に変えて「今日」を前日に戻し、当日の予約・取り消しをすり抜けられた。遅い方を使えば、変えても締め切りは早まるだけ
+-- ---------- 5. 面談：主担当と・締め切りはタイムゾーンを変えた直後だけ塾の暦でも確かめる ----------
+-- 生徒は自分のタイムゾーンを変えられる（留学など）ので、締め切りの直前に西へ変えて「今日」を前日に戻し、
+-- 当日の予約・取り消しをすり抜けられた。変えてから2日の間は、生徒の暦と塾の暦の遅い方の「今日」で見る。
+-- いつも遅い方にすると、本当に海外（塾より西）にいる生徒は毎日「2日前まで」になってしまうので、変えた直後だけにする
+alter table public.profiles add column timezone_changed_at timestamptz;
+create function private.stamp_timezone_change() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if auth.uid() is null then return new; end if;   -- service_role・seed はそのまま
+  -- 変えた時刻は DB が付ける（本人が古い時刻を書いて「変えた直後」を隠せないように）
+  new.timezone_changed_at := case when new.timezone is distinct from old.timezone then now() else old.timezone_changed_at end;
+  return new;
+end $$;
+create trigger stamp_timezone_change before update on public.profiles for each row execute function private.stamp_timezone_change();
+
 create function private.deadline_today(p_student uuid) returns date
 language sql stable security definer set search_path = '' as $$
-  select greatest((now() at time zone coalesce(p.timezone, s.timezone))::date, (now() at time zone s.timezone)::date)
+  select case when p.timezone_changed_at > now() - interval '2 days'
+    then greatest((now() at time zone coalesce(p.timezone, s.timezone))::date, (now() at time zone s.timezone)::date)
+    else (now() at time zone coalesce(p.timezone, s.timezone))::date end
   from public.profiles p join public.schools s on s.id = p.school_id where p.id = p_student;
 $$;
 
@@ -197,7 +211,7 @@ alter policy "coach_open_slots update" on public.coach_open_slots
 alter policy "coach_open_slots delete" on public.coach_open_slots
   using ((coach_id = (select auth.uid()) and (select private.my_role()) = 'coach') or ((select private.is_school_admin()) and school_id = (select private.my_school())));
 alter policy "coach_open_slots select" on public.coach_open_slots
-  using ((coach_id = (select auth.uid()) and (select private.my_role()) is not null) or private.is_my_coach(coach_id)
+  using (((coach_id = (select auth.uid()) or private.is_my_coach(coach_id)) and (select private.my_role()) is not null)
       or ((select private.is_school_admin()) and school_id = (select private.my_school())));
 alter policy "booking_settings insert" on public.booking_settings
   with check ((coach_id = (select auth.uid()) and (select private.my_role()) = 'coach') or ((select private.is_school_admin()) and school_id = (select private.my_school())));
@@ -205,7 +219,7 @@ alter policy "booking_settings update" on public.booking_settings
   using ((coach_id = (select auth.uid()) and (select private.my_role()) = 'coach') or ((select private.is_school_admin()) and school_id = (select private.my_school())))
   with check ((coach_id = (select auth.uid()) and (select private.my_role()) = 'coach') or ((select private.is_school_admin()) and school_id = (select private.my_school())));
 alter policy "booking_settings select" on public.booking_settings
-  using ((coach_id = (select auth.uid()) and (select private.my_role()) is not null) or private.is_my_coach(coach_id)
+  using (((coach_id = (select auth.uid()) or private.is_my_coach(coach_id)) and (select private.my_role()) is not null)
       or ((select private.is_school_admin()) and school_id = (select private.my_school())));
 alter policy "actify objects select" on storage.objects
   using (
@@ -372,5 +386,5 @@ end $$;
 revoke all on function public.save_material_units(uuid, jsonb) from public, anon;
 grant execute on function public.save_material_units(uuid, jsonb) to authenticated, service_role;
 
-revoke all on function private.deadline_today(uuid), private.guard_done_task_delete() from public, anon;
-grant execute on function private.deadline_today(uuid), private.guard_done_task_delete() to authenticated, service_role;
+revoke all on function private.deadline_today(uuid), private.guard_done_task_delete(), private.stamp_timezone_change() from public, anon;
+grant execute on function private.deadline_today(uuid), private.guard_done_task_delete(), private.stamp_timezone_change() to authenticated, service_role;

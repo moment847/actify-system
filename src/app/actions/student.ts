@@ -10,7 +10,7 @@ import { pct, mdw, range, toMin, toTime } from '@/lib/domain/dates';
 import { bookProgress, mat } from '@/lib/domain/plan';
 import { BOT_NAME } from '@/lib/domain/bot-reply';
 import { TAGS, type FeedbackTag } from '@/lib/domain/types';
-import { loadStudents, loadWorld } from '@/lib/data/load';
+import { guardedToday, loadStudents, loadWorld } from '@/lib/data/load';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { env } from '@/lib/env';
 import { dbError, fail, ok, withActor, zDate, zId, zTime, type Result } from '@/server/result';
@@ -89,7 +89,7 @@ export async function openQuizFile(input: { taskId: string; which: 'problem' | '
     if (!t?.quiz_version_id) return fail('この予定に小テストは付いていません');
     if (t.school_id !== actor.schoolId) return fail('小テストが見つかりません');
     // 生徒は、今日までの予定・始めた予定・終わった予定の小テストだけ開ける（先の再テストの解答を先に見られないように）
-    if (actor.role === 'student' && t.status !== 'done' && !t.started_at && t.on_date > actor.today) return fail('この小テストは予定の日から開けます');
+    if (actor.role === 'student' && t.status !== 'done' && !t.started_at && t.on_date > guardedToday(actor, 'earlier')) return fail('この小テストは予定の日から開けます');
     const { data: q } = await createAdminClient().from('quiz_versions').select('school_id, problem_path, answer_path').eq('id', t.quiz_version_id).maybeSingle();
     if (!q || q.school_id !== actor.schoolId) return fail('小テストが見つかりません');
     const url = await signedUrlInSchool('quiz-pdfs', v.which === 'problem' ? q.problem_path : q.answer_path, actor.schoolId);
