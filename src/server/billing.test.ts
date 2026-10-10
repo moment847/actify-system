@@ -9,7 +9,7 @@ const admin = {
     upsert: async (r: Record<string, unknown>) => { Object.assign(row, r); return { error: null }; },
   }),
 } as never;
-import { applySubscription, findLiveSubscription } from './billing';
+import { applySubscription, countSeats, findLiveSubscription } from './billing';
 import type { StripeSubscription } from '@/lib/integrations/stripe';
 
 const sub = (id: string, status: string, created = 1_700_000_000): StripeSubscription =>
@@ -51,5 +51,12 @@ describe('生きている契約を Stripe に聞く', () => {
     expect(row).toMatchObject({ stripe_subscription_id: 'sub_b' });
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [sub('sub_old', 'canceled')] }), { status: 200 })));
     expect(await findLiveSubscription(admin, 'sch2', 'sch2', 'cus_2')).toBeNull();
+  });
+});
+
+describe('在籍中の生徒の数', () => {
+  it('数えられなかったら 0 人にせず失敗にする（数量を1人に下げて返金してしまわない）', async () => {
+    const broken = { from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ eq: async () => ({ count: null, error: { message: 'timeout' } }) }) }) }) }) } as never;
+    await expect(countSeats(broken, 'sch')).rejects.toThrow('timeout');
   });
 });

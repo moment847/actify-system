@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fixture from './__fixtures__/mock-v19.json';
 import { fromMock } from './from-mock';
 import { weekStats } from './plan';
-import { buildWeeklyReport, reportWeek } from './weekly-report';
+import { buildWeeklyReport, inReportWindow, reportWeek } from './weekly-report';
 import type { World } from './types';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -55,5 +55,15 @@ describe('週の報告', () => {
     expect(r.text).toContain('この週の予定はありませんでした');
     expect(r.text).not.toMatch(/\n{3}/);
     expect(r.text.length).toBeLessThan(5000);
+  });
+});
+
+describe('週の報告を送る時間（生徒のタイムゾーンで日曜 20:00〜22:59）', () => {
+  it('日本時間の日曜 20:30 は日本の生徒だけ。ロサンゼルスの生徒はその日の夜（日本時間の月曜 12:30）', () => {
+    const jstSun2030 = new Date('2026-10-04T11:30:00Z');
+    expect(inReportWindow('Asia/Tokyo', jstSun2030)).toBe(true);
+    expect(inReportWindow('America/Los_Angeles', jstSun2030)).toBe(false);
+    expect(inReportWindow('America/Los_Angeles', new Date('2026-10-05T03:30:00Z'))).toBe(true);
+    expect(inReportWindow('Asia/Tokyo', new Date('2026-10-04T14:00:00Z'))).toBe(false);   // 23:00 は外
   });
 });

@@ -1020,4 +1020,178 @@ begin
   end;
 end $$;
 
+-- ===== 2026-10-10 の点検（review_fixes_3） =====
+-- T46：主担当の講師を退会にすると、残った担当が主担当になる
+begin;
+insert into public.coach_assignments (coach_id, student_id) values ('a0000000-0000-4000-8000-0000000000c2', :'hina');
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+update public.profiles set status = 'withdrawn' where id = current_setting('test.coach')::uuid;
+reset role;
+do $$
+begin
+  if (select count(*) from public.coach_assignments where student_id = current_setting('test.hina')::uuid and is_main) <> 1
+     or exists (select 1 from public.coach_assignments where coach_id = current_setting('test.coach')::uuid) then
+    raise exception 'T46 FAILED: no main coach after the main coach withdrew';
+  end if;
+  raise notice 'T46 OK: main coach is kept after withdrawal';
+end $$;
+rollback;
+
+-- T47：終わった予定（記録）は直接消せない
+begin;
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare t uuid;
+begin
+  select id into t from public.tasks where student_id = current_setting('test.hina')::uuid and status = 'done' limit 1;
+  begin
+    delete from public.tasks where id = t;
+    raise exception 'T47 FAILED: deleted a done task';
+  exception when check_violation then null;
+  end;
+  raise notice 'T47 OK: done tasks cannot be deleted';
+end $$;
+reset role;
+rollback;
+
+-- T48：予備時間に入れるのは範囲のあるやり残しだけ（過去の使われなかった予備時間は入れない）
+begin;
+insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title)
+  values (:'hina', private.local_today(:'hina') - 40, '05:00', 60, 'buffer', '予備時間') returning id as oldbuf \gset
+insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title)
+  values (:'hina', private.local_today(:'hina') + 1, '05:00', 120, 'buffer', '予備時間') returning id as newbuf \gset
+set role authenticated;
+set request.jwt.claim.sub = :'hina';
+select coalesce(public.fill_buffer(:'newbuf')::text, '') as moved \gset
+reset role;
+set test.moved = :'moved';
+do $$
+begin
+  if current_setting('test.moved') <> '' and (select unit_id from public.tasks where id = current_setting('test.moved')::uuid) is null then
+    raise exception 'T48 FAILED: a time-only task was put into the buffer';
+  end if;
+  raise notice 'T48 OK: only leftovers with a range go into the buffer';
+end $$;
+rollback;
+
+-- T49：返信の時刻と講師は DB が決める（送った値・書き換えでは変わらない）
+begin;
+select f.task_id as tid from public.task_feedback f where f.student_id = :'hina' and not exists (select 1 from public.task_replies r where r.task_id = f.task_id) limit 1 \gset
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+insert into public.task_replies (task_id, body, created_at) values (:'tid', '返信', '2000-01-01');
+update public.task_replies set coach_id = 'a0000000-0000-4000-8000-0000000000c2', created_at = '2000-01-01' where task_id = :'tid';
+reset role;
+set test.tid = :'tid';
+do $$
+declare r public.task_replies;
+begin
+  select * into r from public.task_replies where task_id = current_setting('test.tid')::uuid;
+  if r.created_at < now() - interval '1 minute' then raise exception 'T49 FAILED: reply time taken from the client'; end if;
+  if r.coach_id <> current_setting('test.coach')::uuid then raise exception 'T49 FAILED: reply moved to another coach'; end if;
+  raise notice 'T49 OK: reply time and coach are stamped by the DB';
+end $$;
+rollback;
+
+-- T50：面談の締め切りはタイムゾーンを変えてもすり抜けられない。副担当は面談を入れられない・主担当以外とは入れられない
+begin;
+insert into public.coach_open_slots (coach_id, on_date, start_time, end_time) values (:'coach', (now() at time zone 'Asia/Tokyo')::date, '04:00', '04:30');
+delete from public.meetings where student_id = :'hina';
+insert into public.coach_assignments (coach_id, student_id) values ('a0000000-0000-4000-8000-0000000000c2', :'hina');
+set role authenticated;
+set request.jwt.claim.sub = :'hina';
+update public.profiles set timezone = 'Etc/GMT+12' where id = current_setting('test.hina')::uuid;
+do $$
+begin
+  begin
+    perform public.book_meeting((now() at time zone 'Asia/Tokyo')::date, '04:00');
+    raise exception 'T50 FAILED: booked today by moving the time zone west';
+  exception when invalid_parameter_value then null;
+  end;
+  begin
+    perform public.book_meeting((now() at time zone 'Asia/Tokyo')::date + 2, '04:00', null, 'a0000000-0000-4000-8000-0000000000c2');
+    raise exception 'T50 FAILED: booked with a sub coach';
+  exception when invalid_parameter_value then null;
+  end;
+end $$;
+set request.jwt.claim.sub = 'a0000000-0000-4000-8000-0000000000c2';
+do $$
+begin
+  begin
+    perform public.book_meeting(private.local_today(current_setting('test.hina')::uuid) + 2, '04:00', current_setting('test.hina')::uuid);
+    raise exception 'T50 FAILED: sub coach replaced the meeting';
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'T50 OK: meeting deadline and main coach';
+end $$;
+reset role;
+rollback;
+
+-- T51：退会した生徒は AI 相談を読めない・ひとことを書き換えられない。退会した講師は面談の枠を作れない・面談を読めない
+begin;
+insert into public.chat_messages (student_id, sender, body) values (:'hina', 'student', 'secret');
+set request.jwt.claim.sub = :'admin';
+update public.profiles set status = 'withdrawn' where id in (:'hina', :'coach');
+set role authenticated;
+set request.jwt.claim.sub = :'hina';
+do $$
+declare n int;
+begin
+  if (select count(*) from public.chat_messages) <> 0 then raise exception 'T51 FAILED: withdrawn student reads chat'; end if;
+  update public.task_feedback set body = 'x' where student_id = current_setting('test.hina')::uuid;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'T51 FAILED: withdrawn student edits feedback'; end if;
+end $$;
+set request.jwt.claim.sub = :'coach';
+do $$
+begin
+  if (select count(*) from public.meetings) <> 0 then raise exception 'T51 FAILED: withdrawn coach reads meetings'; end if;
+  begin
+    insert into public.coach_open_slots (coach_id, weekday, start_time, end_time) values (current_setting('test.coach')::uuid, 2, '10:00', '11:00');
+    raise exception 'T51 FAILED: withdrawn coach inserts open slots';
+  exception when insufficient_privilege then null;
+  end;
+  raise notice 'T51 OK: withdrawn members are locked out everywhere';
+end $$;
+reset role;
+rollback;
+
+-- T52：予定の15分前の通知は、日付と時刻をつなげて見る（0 時をまたいでも出る）
+begin;
+select (now() at time zone 'Asia/Tokyo' + interval '10 minutes')::date as d, to_char(now() at time zone 'Asia/Tokyo' + interval '10 minutes', 'HH24:MI') as t \gset
+update public.profiles set timezone = null where id = :'hina';
+insert into public.tasks (student_id, on_date, start_time, duration_min, vague, title)
+  values (:'hina', :'d', :'t', 30, 'mock', '模試の直し') returning id as soon \gset
+select public.enqueue_due_notifications() >= 0 as ran \gset
+set test.soon = :'soon';
+do $$
+begin
+  if not exists (select 1 from public.notifications where dedupe_key = 'task_start:' || current_setting('test.soon')) then raise exception 'T52 FAILED: no 15-minute notice'; end if;
+  raise notice 'T52 OK: 15-minute notice';
+end $$;
+rollback;
+
+-- T53：生徒と講師・運営の間では役割を変えられない
+begin;
+set role authenticated;
+set request.jwt.claim.sub = :'admin';
+do $$
+begin
+  begin
+    update public.profiles set role = 'coach' where id = current_setting('test.misaki')::uuid;
+    raise exception 'T53 FAILED: student turned into a coach';
+  exception when check_violation then null;
+  end;
+  begin
+    update public.profiles set role = 'student' where id = 'a0000000-0000-4000-8000-0000000000c2';
+    raise exception 'T53 FAILED: coach turned into a student';
+  exception when check_violation then null;
+  end;
+  raise notice 'T53 OK: no role change between student and staff';
+end $$;
+reset role;
+rollback;
+
 \echo 'ALL DB TESTS PASSED'

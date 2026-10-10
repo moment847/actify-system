@@ -5,8 +5,10 @@ import { env } from '@/lib/env';
 import { getSubscription, isLive, listSubscriptions, periodEnd, setSeats, type StripeSubscription } from '@/lib/integrations/stripe';
 
 export async function countSeats(admin: SupabaseClient, schoolId: string): Promise<number> {
-  const { count } = await admin.from('profiles').select('id', { count: 'exact', head: true }).eq('school_id', schoolId).eq('role', 'student').eq('status', 'active');
-  return count ?? 0;
+  const { count, error } = await admin.from('profiles').select('id', { count: 'exact', head: true }).eq('school_id', schoolId).eq('role', 'student').eq('status', 'active');
+  // 数えられなかったのに 0 人として扱うと、300人の塾の数量を1人に下げてしまう（Stripe は差額を返金する）。失敗は失敗として止める
+  if (error || count == null) throw new Error(`countSeats: ${error?.message ?? 'no count'}`);
+  return count;
 }
 
 const iso = (sec: number | null | undefined) => (sec ? new Date(sec * 1000).toISOString() : null);

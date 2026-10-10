@@ -11,7 +11,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { dateAdd, localToday, weekStart } from '@/lib/domain/dates';
 import { schoolMetrics, type SchoolMetrics } from '@/lib/domain/metrics';
 import { seal } from '@/lib/integrations/secret-box';
-import { createCheckout, createCustomer, createPortal } from '@/lib/integrations/stripe';
+import { createCheckout, createCustomer, createPortal, expireOpenCheckouts } from '@/lib/integrations/stripe';
 import { countSeats, findLiveSubscription } from '@/server/billing';
 import { changed, dbError, fail, ok, withActor, zId, type Result } from '@/server/result';
 
@@ -340,6 +340,7 @@ export async function startCheckout(): Promise<Result<{ url: string }>> {
       customer = (await createCustomer(key, { name: actor.schoolName, email: u.user?.email ?? undefined, schoolId: actor.schoolId })).id;
       await admin.from('school_billing').upsert({ school_id: actor.schoolId, stripe_customer_id: customer, updated_at: new Date().toISOString() }, { onConflict: 'school_id' });
     }
+    await expireOpenCheckouts(key, customer);
     const seats = await countSeats(admin, actor.schoolId);
     // 無料期間は初めての契約だけ（解約して契約し直したときは付けない）
     const s = await createCheckout(key, { customer, price, seats, schoolId: actor.schoolId, trialDays: b?.stripe_subscription_id ? 0 : env.stripeTrialDays(),

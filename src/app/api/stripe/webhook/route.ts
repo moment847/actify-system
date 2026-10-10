@@ -6,6 +6,9 @@ import { applySubscription } from '@/server/billing';
 
 // Stripe の Webhook（塾の月額）。受け取るイベント：checkout.session.completed / customer.subscription.created・updated・deleted
 // 同じイベントが二度届いても一度だけ処理する（billing_events の id）。署名と時刻（5分以内）を確かめる
+/** 処理の途中で止まったとみなすまでの時間（関数の上限より長く） */
+const STALE_MS = 5 * 60_000;
+
 export async function POST(req: Request) {
   const secret = env.stripeWebhookSecret();
   if (!secret) return new Response('not configured', { status: 503 });
@@ -14,7 +17,17 @@ export async function POST(req: Request) {
   const ev = JSON.parse(raw) as { id: string; type: string; data: { object: Record<string, unknown> } };
   const admin = createAdminClient();
   const { error: dup } = await admin.from('billing_events').insert({ id: ev.id, type: ev.type });
-  if (dup) return dup.code === '23505' ? new Response('duplicate') : new Response('db error', { status: 500 });
+  if (dup) {
+    if (dup.code !== '23505') return new Response('db error', { status: 500 });
+    // 同じ知らせが前にも届いた。処理し終えていれば捨てる。処理の途中で関数が切られて印だけ残った（5分以上前）なら、もう一度処理する。
+    // 以前は「届いた」印だけで捨てていたので、切られた知らせ（checkout.session.completed など）が二度と処理されなかった
+    const { data: prev } = await admin.from('billing_events').select('processed_at, received_at').eq('id', ev.id).maybeSingle();
+    if (prev?.processed_at) return new Response('duplicate');
+    if (prev && Date.now() - new Date(prev.received_at).getTime() < STALE_MS) return new Response('in progress', { status: 409 });
+    const { data: claimed } = await admin.from('billing_events').update({ received_at: new Date().toISOString() })
+      .eq('id', ev.id).is('processed_at', null).eq('received_at', prev?.received_at ?? '').select('id');
+    if (!claimed?.length) return new Response('in progress', { status: 409 });
+  }
 
   try {
     const o = ev.data.object;
@@ -36,6 +49,7 @@ export async function POST(req: Request) {
       if (!schoolId) schoolId = (await admin.from('school_billing').select('school_id').eq('stripe_customer_id', s.customer).maybeSingle()).data?.school_id ?? null;
       if (schoolId) await applySubscription(admin, schoolId, ev.type === 'customer.subscription.deleted' ? { ...s, status: 'canceled' } : s);
     }
+    await admin.from('billing_events').update({ processed_at: new Date().toISOString() }).eq('id', ev.id);
     return new Response('ok');
   } catch (e) {
     // 処理に失敗したら記録を消して、Stripe の再送で処理し直す

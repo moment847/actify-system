@@ -10,6 +10,16 @@ import type { DateStr, World } from './types';
  */
 export const reportWeek = (today: DateStr): DateStr => (dow(today) === 6 ? weekStart(today) : dateAdd(weekStart(today), -7));
 
+/**
+ * 週の報告を送る時間か：その生徒のタイムゾーンで日曜の 20:00〜22:59。
+ * 以前は日本時間の日曜 20:00 に全員へ送っていて、ロサンゼルスの生徒には日曜の朝4時に「その日を含まない週」の報告が届いた
+ */
+export function inReportWindow(timeZone: string, now = new Date()): boolean {
+  const p = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short', hour: '2-digit', hourCycle: 'h23' }).formatToParts(now);
+  const wd = p.find(x => x.type === 'weekday')!.value, h = Number(p.find(x => x.type === 'hour')!.value);
+  return wd === 'Sun' && h >= 20 && h < 23;
+}
+
 export interface WeeklyReportInput {
   studentName: string;
   schoolName: string;

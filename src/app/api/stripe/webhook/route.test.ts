@@ -2,21 +2,38 @@ import { createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
 
-const events = new Set<string>();
+const events = new Map<string, { processed_at: string | null; received_at: string }>();
 const upserts: { table: string; row: Record<string, unknown> }[] = [];
-vi.mock('@/lib/supabase/admin', () => ({
-  createAdminClient: () => ({
-    from: (table: string) => ({
-      insert: async (row: { id: string }) => {
-        if (events.has(row.id)) return { error: { code: '23505' } };
-        events.add(row.id); return { error: null };
-      },
-      upsert: async (row: Record<string, unknown>) => { upserts.push({ table, row }); return { error: null }; },
-      delete: () => ({ eq: async (_: string, id: string) => { events.delete(id); return { error: null }; } }),
-      select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { school_id: 'sch-from-customer', stripe_customer_id: 'cus_1' } }) }) }),
-    }),
-  }),
-}));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const query = (table: string): any => {
+  let op = 'select', patch: Record<string, unknown> = {};
+  const f: Record<string, unknown> = {};
+  const run = () => {
+    const e = events.get(f.id as string);
+    if (op === 'delete') { events.delete(f.id as string); return { error: null }; }
+    if (op === 'update' && table === 'billing_events') {
+      if (!e || ('processed_at' in f && e.processed_at !== null) || ('received_at' in f && e.received_at !== f.received_at)) return { data: [], error: null };
+      Object.assign(e, patch); return { data: [{ id: f.id }], error: null };
+    }
+    return { data: null, error: null };
+  };
+  const b = {
+    insert: async (row: { id: string }) => {
+      if (events.has(row.id)) return { error: { code: '23505' } };
+      events.set(row.id, { processed_at: null, received_at: new Date().toISOString() }); return { error: null };
+    },
+    upsert: async (row: Record<string, unknown>) => { upserts.push({ table, row }); return { error: null }; },
+    delete: () => { op = 'delete'; return b; },
+    update: (r: Record<string, unknown>) => { op = 'update'; patch = r; return b; },
+    select: () => b,
+    eq: (k: string, v: unknown) => { f[k] = v; return b; },
+    is: (k: string, v: unknown) => { f[k] = v; return b; },
+    maybeSingle: async () => table === 'billing_events' ? { data: events.get(f.id as string) ?? null } : { data: { school_id: 'sch-from-customer', stripe_customer_id: 'cus_1' } },
+    then: (res: (v: unknown) => unknown) => res(run()),
+  };
+  return b;
+};
+vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => ({ from: query }) }));
 
 import { POST } from './route';
 
@@ -53,6 +70,16 @@ describe('Stripe の Webhook', () => {
     await post(sub('1'));
     expect(await (await post(sub('1'))).text()).toBe('duplicate');
     expect(upserts).toHaveLength(1);
+  });
+
+  it('処理の途中で切られた知らせ（印だけ残った）は、5分たてば処理し直す。処理中なら 409 で再送を待つ', async () => {
+    events.set('evt_5', { processed_at: null, received_at: new Date().toISOString() });
+    expect((await post(sub('5'))).status).toBe(409);
+    expect(upserts).toEqual([]);
+    events.set('evt_5', { processed_at: null, received_at: new Date(Date.now() - 10 * 60_000).toISOString() });
+    expect((await post(sub('5'))).status).toBe(200);
+    expect(upserts).toHaveLength(1);
+    expect(events.get('evt_5')?.processed_at).not.toBeNull();
   });
 
   it('解約は canceled。metadata が無ければ customer から塾を引く', async () => {

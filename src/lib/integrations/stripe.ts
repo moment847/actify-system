@@ -73,6 +73,16 @@ export const isLive = (status: string) => (LIVE_STATUSES as readonly string[]).i
 export const listSubscriptions = (key: string, customer: string) =>
   call<{ data: StripeSubscription[] }>(key, 'GET', `/subscriptions?customer=${encodeURIComponent(customer)}&status=all&limit=20`).then(r => r.data);
 
+/**
+ * その顧客の開いたままの支払いページを閉じる。支払いページは24時間使えるので、
+ * 2つのタブで「契約する」を押して両方で払うと、契約が2つ（両方に無料期間）できていた。新しいページを作る前に古いページを閉じる
+ */
+export async function expireOpenCheckouts(key: string, customer: string) {
+  const r = await call<{ data: { id: string }[] }>(key, 'GET', `/checkout/sessions?customer=${encodeURIComponent(customer)}&status=open&limit=20`);
+  for (const s of r.data) await call<unknown>(key, 'POST', `/checkout/sessions/${encodeURIComponent(s.id)}/expire`, {});
+  return r.data.length;
+}
+
 /** 生徒の数を合わせる。日割りは Stripe の既定（次の請求で精算） */
 export const setSeats = (key: string, itemId: string, seats: number, idempotencyKey: string) =>
   call<unknown>(key, 'POST', `/subscription_items/${encodeURIComponent(itemId)}`, { quantity: Math.max(1, seats) }, idempotencyKey);
