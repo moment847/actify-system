@@ -214,8 +214,11 @@ export function freeGaps(w: World, sid: string, date: DateStr, extra: Record<Dat
 }
 
 // ---------- 自動の案（週の空きに、再テスト → やり残し → 次の範囲 の順で置き場所を探す） ----------
-export function suggestions(w: World, sid: string, start: DateStr, dismissed: Set<string> = new Set()) {
-  const days = weekDays(start).filter(d => d > w.today);
+/** 面談の方針（AI の提案を講師が見る前の形。plan-advice.ts が作る）。多め・少なめの教材と、軽くする日 */
+export interface PlanAdjust { more?: Set<string>; less?: Set<string>; avoidDays?: Set<DateStr> }
+
+export function suggestions(w: World, sid: string, start: DateStr, dismissed: Set<string> = new Set(), adjust: PlanAdjust = {}) {
+  const days = weekDays(start).filter(d => d > w.today && !adjust.avoidDays?.has(d));
   if (!days.length) return [];
   const end = dateAdd(start, 6);
   type Q = { key: string; kind: 'review' | 'move' | 'next'; node: string; mat: Material; why: string; earliest: DateStr; dur: number; task?: Task };
@@ -227,12 +230,14 @@ export function suggestions(w: World, sid: string, start: DateStr, dismissed: Se
   const lanes = booksOf(w, sid).map(b => {
     const p = bookProgress(w, sid, b.materialId), weekly = Math.ceil(p.rem / Math.max(daysBetween(start, b.target) / 7, 0.5));
     const already = tasksOf(w, sid).filter(t => t.materialId === b.materialId && !t.retest && t.date >= start && t.date <= end).length;
-    const need = clamp(weekly - already, 0, 4), list: Q[] = [];
+    // 方針で多め（+1、最大5）・少なめ（−1）
+    const more = !!adjust.more?.has(b.materialId), less = !!adjust.less?.has(b.materialId);
+    const need = clamp(weekly - already + (more ? 1 : 0) - (less ? 1 : 0), 0, more ? 5 : 4), list: Q[] = [];
     for (const n of p.m.units) {
       if (list.length >= need) break;
       if (w.tasks.some(t => t.studentId === sid && t.unitId === n.id)) continue;
       const key = 'nx:' + sid + ':' + n.id;
-      if (!dismissed.has(key)) list.push({ key, kind: 'next', node: n.id, mat: p.m, why: `目標${md(b.target)}に間に合うよう今週あと${need}範囲`, earliest: w.today, dur: typicalDur(w, sid, p.m.id) });
+      if (!dismissed.has(key)) list.push({ key, kind: 'next', node: n.id, mat: p.m, why: `目標${md(b.target)}に間に合うよう今週あと${need}範囲${more ? '（面談の方針で多め）' : less ? '（面談の方針で少なめ）' : ''}`, earliest: w.today, dur: typicalDur(w, sid, p.m.id) });
     }
     return list;
   });

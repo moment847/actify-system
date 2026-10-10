@@ -21,11 +21,15 @@ export const env = {
   anthropicApiKey: () => process.env.ANTHROPIC_API_KEY || null,
   chatModel: () => process.env.ACTIFY_CHAT_MODEL || 'claude-opus-5-5',
   ocrModel: () => process.env.ACTIFY_OCR_MODEL || 'claude-opus-5-5',
+  /** 講師向けの AI（面談の記録の要約・予定の方針の提案） */
+  coachAiModel: () => process.env.ACTIFY_COACH_AI_MODEL || 'claude-opus-5-5',
   /** AI の原価を円にするときの為替（1ドル何円か）。整数 */
   usdJpy: posInt('USD_JPY', 150),
   /** 1回の呼び出しの見込みの原価（円）。塾の月の予算を超えないかを、呼ぶ前にこの額で確かめる */
   aiChatEstimateJpy: posInt('AI_CHAT_ESTIMATE_JPY', 30),
   aiOcrEstimateJpy: posInt('AI_OCR_ESTIMATE_JPY', 40),
+  aiNoteEstimateJpy: posInt('AI_NOTE_ESTIMATE_JPY', 15),
+  aiPlanEstimateJpy: posInt('AI_PLAN_ESTIMATE_JPY', 30),
   /** 招待・パスワードのメールのリンクの戻り先（https://… 末尾の / なし） */
   siteUrl: need('NEXT_PUBLIC_SITE_URL'),
   /** 期限つきのファイルURLの有効時間（秒） */

@@ -52,7 +52,7 @@ export function ruleReply(w: World, sid: string, text: string, opts: { hasImage?
 }
 
 /** AI に渡す「この生徒の今の状況」。アプリのデータだけで作る（AI に推測させない） */
-export function studentContext(w: World, sid: string, info: { name: string; goal?: string; examOn?: string | null; coachName?: string }) {
+export function studentContext(w: World, sid: string, info: { name: string; goal?: string; examOn?: string | null; coachName?: string; todos?: { onDate: string; todo: string }[] }) {
   const today = tasksOf(w, sid).filter(t => t.date === w.today).sort(byTime);
   const lines: string[] = [];
   lines.push(`今日：${mdw(w.today)}`);
@@ -69,5 +69,10 @@ export function studentContext(w: World, sid: string, info: { name: string; goal
   if (weak.length) lines.push(`点が低め（70%未満）：${weak.join('、')}`);
   const nx = nextMeeting(w, sid);
   lines.push(`次の面談：${nx ? `${mdw(nx.date)} ${nx.time}` : 'まだ予約していない'}`);
+  // 面談で先生と決めた「次回までにやること」（講師が生徒に共有した欄だけ。議事録の本文は渡さない）
+  if (info.todos?.length) {
+    lines.push('先生と決めた次回までにやること：');
+    info.todos.forEach(t => lines.push(`- ${md(t.onDate)}の面談：${t.todo.replace(/\s*\n\s*/g, '／').slice(0, 300)}`));
+  }
   return lines.join('\n');
 }

@@ -34,7 +34,7 @@ const progressView = (w: World, sid: string, mid: string) => {
 
 // ---------- 生徒 ----------
 export async function studentHomeView(sb: Sb, actor: Actor) {
-  const [w, [me]] = await Promise.all([loadWorld(sb, actor, [actor.id]), loadStudents(sb, actor)]);
+  const [w, [me], { data: todos }] = await Promise.all([loadWorld(sb, actor, [actor.id]), loadStudents(sb, actor), sb.rpc('my_meeting_todos', { p_limit: 1 })]);
   const sid = actor.id, today = tasksOf(w, sid).filter(t => t.date === w.today).sort(byTime);
   const running = today.find(t => t.startedAt && t.status !== 'done');
   // 次の予定：動いているタイマー → まだの予定（予備時間は出さない）
@@ -52,7 +52,9 @@ export async function studentHomeView(sb: Sb, actor: Actor) {
     canUseBuffer: tasksOf(w, sid).some(t => isMissed(w, t)),
     books: booksOf(w, sid).map(b => progressView(w, sid, b.materialId)),
     week: { minutes: ws.minutes, perDay: ws.perDay, due: ws.due.length, done: ws.done.length },
-    coach: { message: me?.coachMessage ?? '', nextMeeting: nx ? { date: nx.date, time: nx.time, len: nx.len } : null },
+    coach: { message: me?.coachMessage ?? '', nextMeeting: nx ? { date: nx.date, time: nx.time, len: nx.len } : null,
+      // 面談で先生と決めた「次回までにやること」（講師が共有した欄だけ）
+      todo: ((todos ?? []) as { on_date: string; todo: string }[]).map(t => ({ date: t.on_date, text: t.todo }))[0] ?? null },
   };
 }
 

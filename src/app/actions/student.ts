@@ -145,10 +145,11 @@ export async function sendChat(input: { text: string; imagePath?: string }): Pro
       const { error: e1 } = await sb.from('chat_messages').insert({ student_id: actor.id, sender: 'student', body: text, image_path: v.imagePath ?? null });
       if (e1) return fail(dbError(e1));
 
-      const [{ data: hist }, world, me] = await Promise.all([
+      const [{ data: hist }, world, me, { data: todos }] = await Promise.all([
         sb.from('chat_messages').select('sender, body').eq('student_id', actor.id).order('id', { ascending: false }).limit(21),
         loadWorld(sb, actor, [actor.id]),
         loadStudents(sb, actor).then(x => x[0]),
+        sb.rpc('my_meeting_todos', { p_limit: 2 }),
       ]);
       const { data: ca } = await sb.from('coach_assignments').select('coach_id').eq('student_id', actor.id).order('is_main', { ascending: false }).order('created_at').limit(1).maybeSingle();
       const coachName = ca ? (await sb.from('profiles').select('display_name').eq('id', ca.coach_id).maybeSingle()).data?.display_name : undefined;
@@ -163,7 +164,8 @@ export async function sendChat(input: { text: string; imagePath?: string }): Pro
       const history = (hist ?? []).reverse().slice(0, -1).map(h => ({ sender: h.sender as 'student' | 'bot', body: h.body }));
       const r = await botReply({
         world, studentId: actor.id, history, text, image, useAi: !!reservationId,
-        info: { name: me?.name ?? '', goal: me ? `${me.goalSchool} ${me.goalFaculty}`.trim() : undefined, examOn: me?.examOn, coachName: coachName ? `${coachName}先生` : undefined },
+        info: { name: me?.name ?? '', goal: me ? `${me.goalSchool} ${me.goalFaculty}`.trim() : undefined, examOn: me?.examOn, coachName: coachName ? `${coachName}先生` : undefined,
+          todos: ((todos ?? []) as { on_date: string; todo: string }[]).map(t => ({ onDate: t.on_date, todo: t.todo })) },
       });
       call = r.call ?? null;
       const note = reserved && 'blocked' in reserved ? BLOCK_NOTE[reserved.blocked as keyof typeof BLOCK_NOTE] ?? '' : '';

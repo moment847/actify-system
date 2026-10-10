@@ -1231,4 +1231,78 @@ end $$;
 reset role;
 rollback;
 
+-- ===== 面談の記録と AI の予定の提案（20261011000000） =====
+-- T55：面談の記録は講師と運営だけ。生徒は表を読めず、「次回までにやること」だけを受け取る。担当でない講師・ほかの塾は読めない
+begin;
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+insert into public.meeting_notes (student_id, kind, on_date, body, shared_todo)
+  values (:'hina', 'minutes', private.local_today(:'hina'), '部活の大会が近い。英文法の第5章が苦手。保護者は推薦も検討', '英文法 第5章を2回解く');
+set request.jwt.claim.sub = :'hina';
+do $$
+begin
+  if (select count(*) from public.meeting_notes) <> 0 then raise exception 'T55 FAILED: student reads meeting notes'; end if;
+  if (select count(*) from public.my_meeting_todos()) <> 1 or (select todo from public.my_meeting_todos() limit 1) <> '英文法 第5章を2回解く' then
+    raise exception 'T55 FAILED: shared todo not delivered';
+  end if;
+end $$;
+set request.jwt.claim.sub = 'a0000000-0000-4000-8000-0000000000c2';
+do $$ begin if (select count(*) from public.meeting_notes) <> 0 then raise exception 'T55 FAILED: unassigned coach reads notes'; end if; end $$;
+set request.jwt.claim.sub = 'b0000000-0000-4000-8000-000000000001';
+do $$ begin if (select count(*) from public.meeting_notes) <> 0 then raise exception 'T55 FAILED: other school reads notes'; end if; end $$;
+set request.jwt.claim.sub = :'admin';
+do $$ begin if (select count(*) from public.meeting_notes) <> 1 then raise exception 'T55 FAILED: admin cannot read notes'; end if; end $$;
+set request.jwt.claim.sub = :'yuma';
+do $$ begin if (select count(*) from public.my_meeting_todos()) <> 0 then raise exception 'T55 FAILED: another student gets the todo'; end if;
+  raise notice 'T55 OK: meeting notes are staff-only, todos are shared'; end $$;
+reset role;
+rollback;
+
+-- T56：ほかの生徒の面談には結びつけられない。書いた人・時刻は書き換えられない
+begin;
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+do $$
+declare other uuid; nid uuid; who uuid;
+begin
+  select id into other from public.meetings where student_id <> current_setting('test.hina')::uuid limit 1;
+  if other is not null then
+    begin
+      insert into public.meeting_notes (student_id, meeting_id, kind, on_date, body) values (current_setting('test.hina')::uuid, other, 'minutes', current_date, 'x');
+      raise exception 'T56 FAILED: linked to another student''s meeting';
+    exception when invalid_parameter_value then null;
+    end;
+  end if;
+  insert into public.meeting_notes (student_id, kind, on_date, body) values (current_setting('test.hina')::uuid, 'memo', current_date, 'メモ') returning id, created_by into nid, who;
+  update public.meeting_notes set created_by = current_setting('test.admin')::uuid, created_at = '2000-01-01' where id = nid;
+  if (select created_by from public.meeting_notes where id = nid) <> who or (select created_at from public.meeting_notes where id = nid) < now() - interval '1 minute' then
+    raise exception 'T56 FAILED: author or time rewritten';
+  end if;
+  raise notice 'T56 OK: notes stay with their student and author';
+end $$;
+reset role;
+rollback;
+
+-- T57：AI の予定の提案は講師・運営だけ。中身は書き換えられず、採用の状態だけ変えられる
+begin;
+set role authenticated;
+set request.jwt.claim.sub = :'coach';
+insert into public.plan_proposals (student_id, week_start, advice, items)
+  values (:'hina', private.local_today(:'hina') - (extract(isodow from private.local_today(:'hina'))::int - 1) + 7, '{"summary":"x"}', '[]') returning id as pid \gset
+set test.pid = :'pid';
+do $$
+begin
+  begin
+    update public.plan_proposals set advice = '{"summary":"y"}' where id = current_setting('test.pid')::uuid;
+    raise exception 'T57 FAILED: advice rewritten';
+  exception when insufficient_privilege then null;
+  end;
+  update public.plan_proposals set status = 'adopted', adopted_keys = '{a}' where id = current_setting('test.pid')::uuid;
+end $$;
+set request.jwt.claim.sub = :'hina';
+do $$ begin if (select count(*) from public.plan_proposals) <> 0 then raise exception 'T57 FAILED: student reads proposals'; end if;
+  raise notice 'T57 OK: plan proposals'; end $$;
+reset role;
+rollback;
+
 \echo 'ALL DB TESTS PASSED'

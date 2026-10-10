@@ -31,7 +31,7 @@ export function clipReply(text: string, max = MAX_REPLY_CHARS): string {
 
 /** Actifyくんの返事。キーが無い・失敗・拒否のときは、アプリのデータから作る決まった文の返事にする */
 export async function botReply(args: {
-  world: World; studentId: string; info: { name: string; goal?: string; examOn?: string | null; coachName?: string };
+  world: World; studentId: string; info: { name: string; goal?: string; examOn?: string | null; coachName?: string; todos?: { onDate: string; todo: string }[] };
   history: ChatTurn[]; text: string; image?: { mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'; base64: string };
   /** false なら AI を呼ばない（上限に達したとき） */
   useAi?: boolean;

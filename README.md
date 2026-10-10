@@ -22,6 +22,8 @@
 | 通知 | 予定の15分前・その日の記録のし忘れ（21:30 以降）・明日の面談（19:00 以降）・先生からの返信・面談の予約と取り消し。アプリの中のベルと、端末への通知（Web Push）。種類ごとのオンオフと「通知しない時間」 | `pnpm test`・T38〜T40 |
 | 生徒の一括登録・複数の講師 | CSV（Excel の Shift_JIS も読む）で最大500人。下見で行ごとの問題を出し、登録はサーバで読み直してから。1人の生徒に主担当1人と副担当。面談は主担当と、返信待ちは主担当に数える | `pnpm test`（8本）・T35 |
 | 運営の数字 | 記録を続けている生徒の割合（週ごと8週）・3日以上記録の無い生徒・講師ごとの返信の速さ（中央値）と返信待ち | `pnpm test`（4本） |
+| 面談の記録 | 面談ごとの議事録と、いつでも書ける自由なメモ（講師と運営だけ）。AI で「決めたこと・宿題・気になること」に整理できる（Zoom の文字起こしを貼ってもよい）。「次回までにやること」の欄だけを生徒に共有し、生徒のホームと Actifyくんに出す（議事録の本文は生徒にも生徒の AI にも渡さない） | `pnpm test`・DB テスト T55・T56 |
+| AI の予定の提案 | 次の週の予定の案。AI が面談の記録・点数・進み・空き時間から「方針」（多め・少なめの教材・軽くする日・講師への注意）を決め、日時に置くのは今までの計算。案は保存し、講師が選んだ項目だけを予定に入れる。AI が使えないときは計算だけの案 | `pnpm test`（4本）・T57 |
 | Actify の月額 | 塾が Actify に払う月額を Stripe で。数量＝在籍中の生徒の数（毎日合わせる）。カードの入力・請求書・解約は Stripe の画面 | `pnpm test`（署名・Webhook 5本）・T41 |
 
 ## 環境変数
@@ -36,9 +38,10 @@
 | `NEXT_PUBLIC_SITE_URL` | ○ | 招待・パスワードのメールのリンクの戻り先。Supabase の Site URL と同じにする |
 | `ANTHROPIC_API_KEY` | | Actifyくんの返事と目次の読み取り。無ければ決まった文の返事・目次は手入力 |
 | `ACTIFY_CHAT_MODEL` / `ACTIFY_OCR_MODEL` | | 既定は `claude-opus-5-5` |
+| `ACTIFY_COACH_AI_MODEL` | | 講師向けの AI（面談の記録の整理・予定の方針）。既定は `claude-opus-5-5` |
 | `USD_JPY` | | AI の原価を円にする為替（既定 150） |
 | `SIGNED_URL_SECONDS` | | ファイルの期限つきURLの有効時間（既定 300秒） |
-| `AI_CHAT_ESTIMATE_JPY` / `AI_OCR_ESTIMATE_JPY` | | 予算を超えないかを呼ぶ前に確かめる「1回の見込みの原価」（既定 30円・40円） |
+| `AI_CHAT_ESTIMATE_JPY` / `AI_OCR_ESTIMATE_JPY` / `AI_NOTE_ESTIMATE_JPY` / `AI_PLAN_ESTIMATE_JPY` | | 予算を超えないかを呼ぶ前に確かめる「1回の見込みの原価」（既定 30円・40円・15円・30円） |
 | `SECRETS_KEY` | LINE を使うなら ○ | 塾ごとの LINE の鍵を暗号にして DB に置く鍵（`openssl rand -base64 32`）。一度決めたら変えない |
 | `CRON_SECRET` | 定期処理を使うなら ○ | `/api/cron/*` の合言葉。無いと定期処理は誰も呼べない |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | 端末への通知を使うなら ○ | `npx web-push generate-vapid-keys` で作る。無ければ通知はアプリの中（ベル）だけ |
@@ -85,6 +88,7 @@ pnpm dev
 1. `supabase/migrations/20261010000000_review_fixes_3.sql`（2026-10-10 の点検の直し）を SQL Editor に貼って流す。
    面談の予約 `book_meeting` と取り消し `cancel_meeting` の最新の版もこれに入っている（行を消す文を含むため、接続ツールからは承認待ちで止まる）。
    流したら `supabase/manual/meeting-functions.sql` の確認の文で3行出ることを見る
+   続けて `supabase/migrations/20261011000000_meeting_notes_plan_ai.sql`（面談の記録と AI の予定の提案）も流す
 2. Dashboard → Authentication：Email Templates に `supabase/templates/` の2通、URL Configuration の Site URL、Sign up を切る
 3. デモの PDF を置く：`.env.local` に secret key を入れて `pnpm db:seed:files`
 4. 任意：Pro プランにしたら、漏れたパスワードを拒む設定（Leaked password protection）を入れる
@@ -114,7 +118,7 @@ AI を呼ぶ前に、DB の `ai_reserve` が枠を取る（塾ごとに順番に
 | 上限 | 既定 | 変える所 |
 | --- | --- | --- |
 | 1人が同時に呼べる数 | 1件（前の返事が終わるまで次を受けない。2分たったものは止まったとみなす） | なし |
-| 1人1日の回数（相談と目次の読み取り） | 30回 | `schools.ai_daily_limit_per_user` |
+| 1人1日の回数（相談・目次の読み取り・記録の整理・予定の提案） | 30回 | `schools.ai_daily_limit_per_user` |
 | 塾の月の予算 | 5,000円 | `schools.ai_monthly_budget_jpy` |
 | 1人が24時間に送れる相談（AI を使わない返事も含む） | 100件 | `src/app/actions/student.ts` |
 
@@ -204,6 +208,8 @@ Vercel 以外で動かすときは、Supabase の pg_cron + pg_net から `Autho
 - **生徒が小テストの PDF を開けるのは、今日までの予定・始めた予定・終わった予定だけ**（先の再テストの解答を先に見られないように。2026-10-10）。
 - **終わった予定（記録）は消せない**（DB のトリガ。以前は動かせないだけで、消すことはできた。2026-10-10）。
 - **返信の時刻と講師は DB が決める**（運営の「返信の速さ」を本人が操作できないように。2026-10-10）。
+- **面談の記録は講師と運営だけが読む**。生徒に見せるのは「次回までにやること」（shared_todo）の欄だけで、生徒は表を直接読めず関数 `my_meeting_todos` から受け取る。生徒向けの AI（Actifyくん）もこの欄だけを読む（議事録の本文を渡すと、AI が生徒に話してしまうため）。AI の要約の「次回までにやること」は案として返すだけで、共有は講師が確かめてから（2026-10-11）。
+- **AI の予定の提案は「方針」だけ**。日時に置くのは今までの計算（`suggestions`）で、重なり・面談・小テストの付け方は計算と DB が守る。AI の返事は生徒の教材とその週の日だけに絞って使う（`cleanAdvice`）。案は `plan_proposals` に保存し、講師が選んだ項目だけを入れる。自動では入れない（2026-10-11）。
 - **目次は範囲の ID で合わせて保存する**（`save_material_units`。途中の行を消しても、ほかの範囲の記録はずれない。2026-10-10）。
 
 ## まだ無いもの
