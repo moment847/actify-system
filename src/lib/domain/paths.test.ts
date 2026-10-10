@@ -25,5 +25,10 @@ describe('ログイン後の転送先', () => {
     for (const bad of ['//evil.example', '/\\evil.example', '/\\/evil.example', 'https://evil.example/x', 'javascript:alert(1)', '\\\\evil.example'])
       expect(safeNext(bad, o), bad).toBe('/');
   });
+  it('正規化で // になる形も外へは飛ばさない', () => {
+    for (const bad of ['/.//evil.example', '/..//evil.example', '/x/..//evil.example', '/%2e//evil.example', '/./\\evil.example'])
+      expect(safeNext(bad, o), bad).toBe('/');
+    expect(safeNext('/a/../coach', o)).toBe('/coach');
+  });
   it('空なら既定へ', () => expect(safeNext(null, o)).toBe('/'));
 });

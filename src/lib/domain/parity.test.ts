@@ -1,7 +1,7 @@
 // モック v19 と同じ答えを出すか（正解データは scripts/mock/export-fixture.mjs がモックを実際に動かして作ったもの）
 import { describe, expect, it } from 'vitest';
 import fixture from './__fixtures__/mock-v19.json';
-import { dateAdd, weekDays, weekStart } from './dates';
+import { dateAdd, daysBetween, weekDays, weekStart } from './dates';
 import { fromMock } from './from-mock';
 import {
   availRegistered, blockGaps, bookProgress, booksOf, candidatesFor, fitSet, freeGaps, lastRecord, meetingSlots, nextNode, orderSet, packGap,
@@ -19,6 +19,7 @@ const SUBJECT_JA: Record<string, string> = { english: '英語', math: '数学', 
 let seq = 0;
 const newId = () => 'new-' + seq++;
 
+// 始めて3週間たっていない本のペース（perWeek・finish・late・status）は、モックが3週で割っていた誤りを直したので比べない（fixes.test.ts で確かめる）
 describe.each(sids)('生徒 %s', sid => {
   const exp = fx.perStudent[sid];
 
@@ -32,7 +33,9 @@ describe.each(sids)('生徒 %s', sid => {
     const got = booksOf(w, sid).map(b => { const p = bookProgress(w, sid, b.materialId);
       return { material: b.materialId, total: p.total, done: p.done, rem: p.rem, perWeek: p.perWeek, needPerWeek: p.needPerWeek, finish: p.finish, late: p.late, status: p.status, expected: p.expected, avg: p.avg,
         cells: p.cells.map(c => ({ node: c.n.id, done: c.done, planned: c.planned, last: c.last, tries: c.tries, first: c.first || null })) }; });
-    expect(got).toEqual(exp.books);
+    const young = new Set(booksOf(w, sid).filter(b => daysBetween(b.start, w.today) < 21).map(b => b.materialId));
+    const strip = (a: any[]) => a.map(x => (young.has(x.material) ? { ...x, perWeek: 0, finish: null, late: 0, status: null } : x));
+    expect(strip(got)).toEqual(strip(exp.books));
   });
 
   it('1回の時間（直近5回）と次の範囲', () => {

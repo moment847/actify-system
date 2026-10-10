@@ -14,7 +14,9 @@ export function safeNext(next: string | null | undefined, origin: string, fallba
     const base = new URL(origin);
     const u = new URL(next, base);
     if (u.origin !== base.origin) return fallback;
-    return u.pathname + u.search + u.hash;
+    const out = u.pathname + u.search + u.hash;
+    // 「/.//evil.example」は正規化で「//evil.example」になり、ブラウザは別のサイトとして読む。先頭が // や /\ なら使わない
+    return /^\/(?![\/\\])/.test(out) ? out : fallback;
   } catch {
     return fallback;
   }

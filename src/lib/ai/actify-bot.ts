@@ -4,7 +4,7 @@ import { env } from '@/lib/env';
 import { ruleReply, studentContext, type BotReply } from '@/lib/domain/bot-reply';
 import type { World } from '@/lib/domain/types';
 import { claudeClient, errorKind, FALLBACK } from './claude';
-import { costJpy } from './pricing';
+import { callCost } from './pricing';
 import { ACTIFY_CHAT_PROMPT_VERSION, ACTIFY_CHAT_SYSTEM, contextMessage } from './prompts/actify-chat.v1';
 
 export interface ChatTurn { sender: 'student' | 'bot'; body: string }
@@ -23,7 +23,8 @@ export const MAX_REPLY_CHARS = 1500;
 export function clipReply(text: string, max = MAX_REPLY_CHARS): string {
   const t = text.trim();
   if (t.length <= max) return t;
-  const cut = t.slice(0, max);
+  // サロゲートペア（𠮷 など）の途中で切らない
+  const cut = /[\uD800-\uDBFF]$/.test(t.slice(0, max)) ? t.slice(0, max - 1) : t.slice(0, max);
   const at = Math.max(cut.lastIndexOf('\n'), cut.lastIndexOf('。'));
   return (at > max * 0.6 ? cut.slice(0, at + 1) : cut).trimEnd() + '\n（長くなったので、ここまでにするね）';
 }
@@ -58,7 +59,7 @@ export async function botReply(args: {
       output_config: { effort: 'low' },   // 雑談と相談：深く考えるより早く返す
       ...FALLBACK,
     });
-    const call = { model: res.model, promptVersion: ACTIFY_CHAT_PROMPT_VERSION, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens, costJpy: costJpy(res.model, res.usage, env.usdJpy()) };
+    const call = { model: res.model, promptVersion: ACTIFY_CHAT_PROMPT_VERSION, ...callCost(res.model, res.usage, env.usdJpy()) };
     if (res.stop_reason === 'refusal') return { reply: fallback(), call: { ...call, error: `refusal:${res.stop_details?.category ?? 'unknown'}` } };
     const text = res.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('').trim();
     if (!text) return { reply: fallback(), call: { ...call, error: 'empty' } };

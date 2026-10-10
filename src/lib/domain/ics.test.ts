@@ -11,6 +11,10 @@ describe('面談の .ics', () => {
     expect(t.startsWith('BEGIN:VCALENDAR\r\n') && t.endsWith('END:VCALENDAR\r\n')).toBe(true);
   });
   it('件名のカンマ・セミコロンは逃がす', () => {
-    expect(icsText('x', [{ id: 'a', date: '2026-10-03', time: '09:00', len: 20, summary: '面談;A,B' }])).toContain('SUMMARY:面談\;A\\,B');
+    expect(icsText('x', [{ id: 'a', date: '2026-10-03', time: '09:00', len: 20, summary: '面談;A,B' }])).toContain('SUMMARY:面談\\;A\\,B');
+  });
+  it('0時をまたぐ面談は終わりの日付を進める', () => {
+    const t = icsText('x', [{ id: 'a', date: '2026-10-03', time: '23:30', len: 60, summary: 's' }]);
+    expect(t).toContain('DTEND;TZID=Asia/Tokyo:20261004T003000\r\n');
   });
 });

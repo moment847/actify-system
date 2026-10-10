@@ -13,7 +13,8 @@ export interface PdfNameMatch { role: 'problem' | 'answer'; material: string | n
 
 export function matchPdfName(name: string, materials: Material[]): PdfNameMatch {
   const base = name.replace(/\.pdf$/i, ''), n = norm(base);
-  const role = /解答|答え|こたえ|answer|ans|kaitou|kaito/i.test(base) ? 'answer' : 'problem';
+  // 英字は語の切れ目で見る（「Transition」「plans」の ans を解答にしない）
+  const role = /解答|答え|こたえ|(^|[^a-z])(answers?|ans|kaitou|kaito)(?![a-z])/i.test(base) ? 'answer' : 'problem';
   let best: Material | null = null, bestScore = 0;
   for (const m of materials.filter(x => !x.archived)) {
     const sc = keysOf(m).filter(k => n.includes(k)).reduce((a, k) => a + k.length, 0);
@@ -57,7 +58,13 @@ export function parseFreeEntry(w: World, sid: string, text: string): FreeEntry |
   if (!best) return { kind: 'free', title: t };
   const m = best;
   let hit: Material['units'][number] | undefined;
-  if (nums_.length) hit = m.units.find(x => { const ln = nums(x.label); return ln.length > 0 && nums_.every(v => ln.includes(v)); }) || m.units.find(x => nums(x.label).includes(nums_[0]));
+  // 教材の名前の数字（ターゲット「1900」）は範囲の数字として使わない
+  const own = new Set([m.name, m.short, ...(m.keywords || [])].flatMap(s => nums(s || '')));
+  const typed = nums_.filter(v => !own.has(v));
+  if (typed.length) hit = m.units.find(x => { const ln = nums(x.label); return ln.length > 0 && typed.every(v => ln.includes(v)); })
+    // 「850」のように範囲の途中の数なら、その数を含む範囲（「801-900」）
+    || m.units.find(x => { const ln = nums(x.label); return ln.length >= 2 && ln[0] <= typed[0] && typed[0] <= ln[ln.length - 1]; })
+    || m.units.find(x => nums(x.label).includes(typed[0]));
   if (!hit) {
     const rest = norm(t.replace(/\d+/g, ''));
     hit = m.units.find(x => { const lt = norm(x.label.replace(/\d+/g, '')); return lt.length >= 2 && (rest.includes(lt) || (lt.includes(rest) && rest.length >= 3 && !keysOf(m).some(k => rest.includes(k)))); });

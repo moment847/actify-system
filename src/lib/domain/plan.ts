@@ -79,10 +79,13 @@ export function bookProgress(w: World, sid: string, mid: string): BookProgress {
   });
   const done = cells.filter(c => c.done).length, rem = total - done;
   const recent = cells.filter(c => c.first && daysBetween(c.first, w.today) < 21).length;
-  const perWeek = recent / 3;
+  // ペースは直近3週間。始めて3週間たっていない本は、始めてからの日数で割る（1週間前に始めた本を3週で割ると遅く見える）
+  const since = daysBetween(b.start, w.today), windowWeeks = clamp(since, 7, 21) / 7;
+  const perWeek = recent / windowWeeks;
   const weeksLeft = Math.max(daysBetween(w.today, b.target) / 7, 0.5);
   const finish = rem === 0 ? null : perWeek > 0 ? dateAdd(w.today, Math.ceil((rem / perWeek) * 7)) : null;
-  const late = rem === 0 ? -1 : finish ? daysBetween(b.target, finish) : 999;
+  // 始めて1週間以内でまだ何も終えていない本は、遅れかどうか決められないので「順調」にしておく
+  const late = rem === 0 ? -1 : finish ? daysBetween(b.target, finish) : since < 7 ? 0 : 999;
   const status: BookProgress['status'] = rem === 0 ? { label: '1周完了', tone: 'green' } : late <= 0 ? { label: '順調', tone: 'green' }
     : late <= 14 ? { label: 'やや遅れ', tone: 'amber' } : { label: '遅れ', tone: 'red' };
   const span = Math.max(1, daysBetween(b.start, b.target));
@@ -239,7 +242,8 @@ export function suggestions(w: World, sid: string, start: DateStr, dismissed: Se
     // 次の範囲は日をばらす（案の少ない日から）。再テストとやり残しは早い日から
     const order = q.kind === 'next' ? [...cands].sort((a, b) => (load[a] || 0) - (load[b] || 0) || a.localeCompare(b)) : cands;
     for (const d of order) {
-      const g = freeGaps(w, sid, d, extra).find(([s, e]) => e - s >= q.dur);
+      // 始まりを5分刻みに切り上げたあとでも枠に入るか（19:03〜19:48 に45分は入らない）
+      const g = freeGaps(w, sid, d, extra).find(([s, e]) => e - Math.ceil(s / 5) * 5 >= q.dur);
       if (!g) continue;
       const s = Math.ceil(g[0] / 5) * 5;
       (extra[d] ||= []).push([s, s + q.dur]); load[d] = (load[d] || 0) + 1;
@@ -395,7 +399,7 @@ export function recommendFill(w: World, sid: string, b: Block, newId: () => stri
 /** 範囲を押したときの初期の時間：表示中の週（今日より後）で最初に空いている所 */
 export function firstFreeSlot(w: World, sid: string, len: number, start: DateStr) {
   const from = start > w.today ? start : dateAdd(w.today, 1);
-  for (let i = 0; i < 21; i++) { const d = dateAdd(from, i), g = freeGaps(w, sid, d).find(([s, e]) => e - s >= len); if (g) return { date: d, time: toTime(Math.ceil(g[0] / 5) * 5) }; }
+  for (let i = 0; i < 21; i++) { const d = dateAdd(from, i), g = freeGaps(w, sid, d).find(([s, e]) => e - Math.ceil(s / 5) * 5 >= len); if (g) return { date: d, time: toTime(Math.ceil(g[0] / 5) * 5) }; }
   return { date: from, time: '19:00' };
 }
 

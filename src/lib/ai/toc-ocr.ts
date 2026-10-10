@@ -3,7 +3,7 @@ import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
 import { z } from 'zod';
 import { env } from '@/lib/env';
 import { claudeClient, errorKind, FALLBACK } from './claude';
-import { costJpy } from './pricing';
+import { callCost } from './pricing';
 import { TOC_OCR_INSTRUCTION, TOC_OCR_PROMPT_VERSION } from './prompts/toc-ocr.v1';
 
 export const TocResult = z.object({
@@ -28,8 +28,8 @@ export async function readToc(image: { mediaType: 'image/jpeg' | 'image/png' | '
       ] }],
       output_config: { effort: 'medium', format: zodOutputFormat(TocResult) },
       ...FALLBACK,
-    });
-    const call = { model: res.model, promptVersion: TOC_OCR_PROMPT_VERSION, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens, costJpy: costJpy(res.model, res.usage, env.usdJpy()) };
+    }, { timeout: 120_000 });   // 長い目次は考える分も含めて30秒を超える（会話の30秒とは別にする）
+    const call = { model: res.model, promptVersion: TOC_OCR_PROMPT_VERSION, ...callCost(res.model, res.usage, env.usdJpy()) };
     if (res.stop_reason === 'refusal') return { result: null, call: { ...call, error: 'refusal' } };
     const text = res.content.flatMap(b => (b.type === 'text' ? [b.text] : [])).join('');
     // JSON が途中で切れていても（max_tokens に当たった）、原価は実際のトークン数で残す（0 円にしない）
